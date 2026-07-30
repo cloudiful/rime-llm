@@ -40,7 +40,9 @@ pub async fn raw_logits_for_tokens(model: &Model, tokens: &[u32]) -> Result<Vec<
     let request = Request::Normal(Box::new(NormalRequest {
         messages: RequestMessage::CompletionTokens(tokens.to_vec()),
         sampling_params: SamplingParams {
-            max_len: Some(0),
+            // mistral.rs rejects zero even though this request only needs
+            // prompt logits and does not consume a generated token.
+            max_len: Some(1),
             ..SamplingParams::deterministic()
         },
         response: tx,

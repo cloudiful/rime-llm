@@ -105,7 +105,7 @@ fn parse_entry(line: &str) -> Option<LexiconEntry> {
     let text = fields.next()?.trim();
     let preedit = fields.next()?.trim().to_ascii_lowercase();
     let code = normalize_code(&preedit);
-    if text.is_empty() || code.is_empty() || !is_chinese_text(text) {
+    if text.is_empty() || code.is_empty() || !is_chinese_text(text) || !is_pinyin_code(&code) {
         return None;
     }
     let prior = fields
@@ -139,6 +139,10 @@ fn is_chinese_text(text: &str) -> bool {
     })
 }
 
+fn is_pinyin_code(code: &str) -> bool {
+    code.chars().all(|character| character.is_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +160,7 @@ mod tests {
     fn ignores_headers_and_non_chinese_entries() {
         assert!(parse_entry("name: rime_ice").is_none());
         assert!(parse_entry("hello\thello\t10").is_none());
+        assert!(parse_entry("检委会\t100").is_none());
     }
 
     #[test]
