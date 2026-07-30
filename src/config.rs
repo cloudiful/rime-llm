@@ -1,4 +1,8 @@
-use std::{env, fs, net::SocketAddr, path::PathBuf};
+use std::{
+    env, fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -20,11 +24,24 @@ fn default_model_dir() -> PathBuf {
 
 fn default_dictionary_root() -> PathBuf {
     let current = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if current.join("cn_dicts").is_dir() {
-        current
-    } else {
-        current.join("..").to_path_buf()
+    let mut candidates = vec![
+        current.join("data/rime-ice"),
+        current.join("rime-llm/data/rime-ice"),
+    ];
+    if let Ok(executable) = env::current_exe() {
+        if let Some(project_root) = executable
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+        {
+            candidates.push(project_root.join("data/rime-ice"));
+        }
     }
+
+    candidates
+        .into_iter()
+        .find(|path| path.join("rime_ice.dict.yaml").is_file())
+        .unwrap_or_else(|| current.join("data/rime-ice"))
 }
 
 fn default_model_repo() -> String {
@@ -32,7 +49,7 @@ fn default_model_repo() -> String {
 }
 
 fn default_model_file() -> String {
-    "Qwen3-0.6B-IQ4_XS.gguf".to_string()
+    "Qwen3-0.6B-Q4_K_M.gguf".to_string()
 }
 
 fn default_tokenizer_repo() -> String {
@@ -288,7 +305,7 @@ mod tests {
     fn default_model_url_is_stable() {
         let settings = Settings::default();
         assert!(settings.model_url().contains("unsloth/Qwen3-0.6B-GGUF"));
-        assert!(settings.model_url().contains("Qwen3-0.6B-IQ4_XS.gguf"));
+        assert!(settings.model_url().contains("Qwen3-0.6B-Q4_K_M.gguf"));
     }
 
     #[test]
@@ -296,5 +313,14 @@ mod tests {
         let mut settings = Settings::default();
         settings.model_file = "../model.gguf".into();
         assert!(settings.normalize_and_validate().is_err());
+    }
+
+    #[test]
+    fn default_dictionary_uses_bundled_data() {
+        let settings = Settings::default();
+        assert!(settings
+            .dictionary_root
+            .join("rime_ice.dict.yaml")
+            .is_file());
     }
 }

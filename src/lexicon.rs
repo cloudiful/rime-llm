@@ -1,10 +1,8 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, fs, path::Path};
 
 use tracing::{debug, warn};
+
+use crate::dictionary_files::dictionary_files;
 
 #[derive(Debug, Clone)]
 pub struct LexiconEntry {
@@ -24,17 +22,7 @@ pub struct Lexicon {
 impl Lexicon {
     pub fn load(root: &Path) -> Self {
         let mut lexicon = Self::default();
-        let mut files = vec![root.join("rime_ice.dict.yaml")];
-        if let Ok(entries) = fs::read_dir(root.join("cn_dicts")) {
-            files.extend(
-                entries
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-                    .filter(|path| path.extension().and_then(|x| x.to_str()) == Some("yaml")),
-            );
-        }
-
-        for path in files {
+        for path in dictionary_files(root) {
             if let Err(error) = lexicon.load_file(&path) {
                 debug!(path = %path.display(), %error, "skipping unreadable Rime dictionary");
             }
@@ -151,16 +139,6 @@ fn is_chinese_text(text: &str) -> bool {
     })
 }
 
-#[allow(dead_code)]
-fn _dictionary_files(root: &Path) -> Vec<PathBuf> {
-    fs::read_dir(root.join("cn_dicts"))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +156,15 @@ mod tests {
     fn ignores_headers_and_non_chinese_entries() {
         assert!(parse_entry("name: rime_ice").is_none());
         assert!(parse_entry("hello\thello\t10").is_none());
+    }
+
+    #[test]
+    fn loads_bundled_dictionary_manifest() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/rime-ice");
+        let lexicon = Lexicon::load(&root);
+        let candidates = lexicon.candidates_for("buru", 16);
+
+        assert!(candidates.iter().any(|entry| entry.text == "不如"));
+        assert!(lexicon.pinyin_by_word.len() > 100_000);
     }
 }
