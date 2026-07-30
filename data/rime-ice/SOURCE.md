@@ -35,7 +35,7 @@ Current SHA-256 values:
 ddad7554a5bdecbbeb557ee703ecee548c828722a262ec9e5aee9caad8e52cf8  cn_dicts/8105.dict.yaml
 3bbf598226fda9b629a7aa0c141ca20601a2c3e102562b3fb7322babf1ca56ba  cn_dicts/base.dict.yaml
 543859f891dec5335b831840d895e1a1c4ef500648aef52b5e7c2963a2a2d256  cn_dicts/ext.dict.yaml
-274861595107ec36930107131b26e9899243003a33b07587f52fb00b29001225  cn_dicts/tencent.dict.yaml
+c962190fdebdd1d388a6ac7a81a9c2f7002e79b0675f440fbd8a80b1e890adde  cn_dicts/tencent.dict.yaml
 6a6b1a77d94c7cdf9203cf426e67f350215d2d73259fe3769c97d2a18f521c28  cn_dicts/others.dict.yaml
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986  LICENSE
 ```
