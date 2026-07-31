@@ -27,6 +27,9 @@ schema，不会修改 `default.custom.yaml` 或其他个人配置。
 `librime-llm-predict.dylib` 到鼠须管自带的 `rime-plugins` 目录，然后重新部署 Rime，
 选择「雾凇拼音（本地模型）」(`rime_ice_llm`)。
 
+带版本号的 GitHub Release 会提供 macOS arm64 服务与 native 插件压缩包，以及
+Windows x64 CPU 服务压缩包。模型仍在首次启动时下载，不包含在 release 压缩包中。
+
 原 Lua 翻译器仍保留在 Rime 配置中作为回退，但默认方案已经不再加载它。服务或插件
 不可用时，普通 Rime 输入仍然可以使用。
 

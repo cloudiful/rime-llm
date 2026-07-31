@@ -1,0 +1,176 @@
+name: Release
+run-name: Release by ${{ github.actor }}
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }} ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos
+            runner: macos-14
+            target: aarch64-apple-darwin
+            features: metal
+          - os: windows
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            features: ""
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      TARGET: ${{ matrix.target }}
+      FEATURES: ${{ matrix.features }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: v0.16.0
+
+      - name: Run Rust tests
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BASEDIRS: ${{ github.workspace }}
+          SCCACHE_BUCKET: sccache
+          SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
+          SCCACHE_REGION: auto
+          SCCACHE_S3_KEY_PREFIX: rust/rime-llm/
+        run: cargo test --no-default-features --target "${TARGET}"
+
+      - name: Build native macOS plugin
+        if: matrix.os == 'macos'
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BASEDIRS: ${{ github.workspace }}
+          SCCACHE_BUCKET: sccache
+          SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
+          SCCACHE_REGION: auto
+          SCCACHE_S3_KEY_PREFIX: rust/rime-llm/
+          CMAKE_CXX_COMPILER_LAUNCHER: sccache
+        run: scripts/build-native-plugin.sh package-native
+
+      - name: Build Rust service
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BASEDIRS: ${{ github.workspace }}
+          SCCACHE_BUCKET: sccache
+          SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
+          SCCACHE_REGION: auto
+          SCCACHE_S3_KEY_PREFIX: rust/rime-llm/
+        run: |
+          set -euo pipefail
+          build=(cargo build --release --target "${TARGET}" --bin rime-llm)
+          if [[ -n "${FEATURES}" ]]; then
+            build+=(--features "${FEATURES}")
+          else
+            build+=(--no-default-features)
+          fi
+          "${build[@]}"
+
+      - name: Show sccache stats
+        if: always()
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BASEDIRS: ${{ github.workspace }}
+          SCCACHE_BUCKET: sccache
+          SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
+          SCCACHE_REGION: auto
+          SCCACHE_S3_KEY_PREFIX: rust/rime-llm/
+        run: sccache --show-stats
+
+      - name: Package macOS release
+        if: matrix.os == 'macos'
+        shell: bash
+        run: scripts/package-release.sh
+
+      - name: Package Windows release
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-${{ matrix.target }}-${{ github.run_id }}
+          path: package-output/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: release-artifacts
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Verify release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release
+          mkdir -p release
+          find release-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} release/ \;
+          test -f "release/rime-llm-${GITHUB_REF_NAME}-macos-arm64.tar.gz"
+          test -f "release/rime-llm-${GITHUB_REF_NAME}-windows-x86_64.zip"
+          cd release
+          for checksum in ./*.sha256; do
+            sha256sum -c "${checksum}"
+          done
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release/*

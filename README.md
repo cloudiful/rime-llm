@@ -30,6 +30,10 @@ against the librime 1.16 dylib shipped by Squirrel. Follow
 `librime-llm-predict.dylib` into Squirrel's bundled `rime-plugins` directory.
 Then redeploy Rime and select `雾凇拼音（本地模型）` (`rime_ice_llm`).
 
+Tagged GitHub releases provide a macOS arm64 archive containing the service and
+native plugin, plus a Windows x64 CPU service archive. The model is downloaded
+on first start and is not included in release archives.
+
 The old Lua translator remains in the Rime configuration as a fallback, but
 the default schema no longer loads it. When the service or plugin is
 unavailable, ordinary Rime input continues to work.
