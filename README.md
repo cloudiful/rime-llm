@@ -2,9 +2,10 @@
 
 [Chinese](README.zh-CN.md)
 
-`rime-llm` is a local next-word prediction service for Rime. It uses
-Qwen3-0.6B-Q4_K_M through `mistral.rs`, keeps committed context in memory,
-and leaves ordinary Rime dictionary candidates available immediately.
+`rime-llm` is a local candidate-reranking and next-word prediction service for
+Rime. It uses Qwen3-0.6B-Q4_K_M through `mistral.rs` and keeps committed context
+in memory. The model-ranked result is shown in the active candidate menu when
+the service responds; ordinary Rime candidates are used as the fallback.
 
 ## Run the service
 
@@ -40,11 +41,12 @@ unavailable, ordinary Rime input continues to work.
 
 ## Prediction behavior
 
-While entering ordinary pinyin, the native worker requests `/candidates` in
-the background; ordinary Rime dictionary candidates remain immediate. After a
-Chinese commit, it waits 200 ms, sends one `/predict` request, and displays
-up to five candidates. The worker never blocks the Rime key path; it keeps at
-most one model request running and one latest pending request.
+While entering ordinary pinyin, the native translator requests `/candidates`
+for the current input and waits up to 1500 ms so Squirrel can display the
+model-ranked menu in the same key update. If the service is unavailable or
+exceeds the wait budget, ordinary Rime dictionary candidates are used. After a
+Chinese commit, the worker waits 200 ms, sends one `/predict` request, and
+displays up to five candidates in the background.
 
 Modes are `free` (default), `dictionary`, and `hybrid`. Configure them in the
 `prediction` block of the schema or in

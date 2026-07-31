@@ -32,33 +32,10 @@ struct Completion {
   PredictionResult result;
 };
 
-struct CandidateCompletion {
-  std::weak_ptr<SessionState> state;
-  CandidateResult result;
-};
-
 void ApplyCompletion(void* raw) {
   std::unique_ptr<Completion> completion(static_cast<Completion*>(raw));
   if (auto state = completion->state.lock())
     state->ApplyResult(std::move(completion->result));
-}
-
-void ApplyCandidateCompletion(void* raw) {
-  std::unique_ptr<CandidateCompletion> completion(
-      static_cast<CandidateCompletion*>(raw));
-  if (auto state = completion->state.lock())
-    state->ApplyCandidateResult(std::move(completion->result));
-}
-
-bool IsPinyinInput(const std::string& input) {
-  if (input.empty())
-    return false;
-  for (unsigned char character : input) {
-    if (!((character >= 'a' && character <= 'z') ||
-          (character >= 'A' && character <= 'Z')))
-      return false;
-  }
-  return true;
 }
 
 }  // namespace
@@ -69,15 +46,26 @@ LlmConfig ReadConfig(const rime::Ticket& ticket) {
   if (!config)
     return result;
   config->GetBool("prediction/enabled", &result.enabled);
+  config->GetBool("llm_candidate_translator/enabled", &result.candidates_enabled);
+  config->GetBool("llm_candidate_translator/replace_candidates",
+                  &result.replace_candidates);
   config->GetString("prediction/endpoint", &result.endpoint);
   config->GetString("prediction/mode", &result.mode);
   config->GetString("prediction/trigger", &result.trigger);
   ReadInt(config, "prediction/idle_delay_ms", &result.idle_delay_ms);
   ReadInt(config, "prediction/max_candidates", &result.max_candidates);
+  ReadInt(config, "llm_candidate_translator/max_candidates",
+          &result.candidate_max_candidates);
+  ReadInt(config, "llm_candidate_translator/max_wait_ms",
+          &result.candidate_timeout_ms);
   ReadInt(config, "prediction/max_tokens", &result.max_tokens);
   ReadInt(config, "prediction/timeout_ms", &result.timeout_ms);
   result.idle_delay_ms = std::max(0, std::min(60000, result.idle_delay_ms));
   result.max_candidates = std::max<size_t>(1, std::min<size_t>(16, result.max_candidates));
+  result.candidate_max_candidates =
+      std::max<size_t>(1, std::min<size_t>(16, result.candidate_max_candidates));
+  result.candidate_timeout_ms =
+      std::max(100, std::min(1500, result.candidate_timeout_ms));
   result.max_tokens = std::max<size_t>(1, std::min<size_t>(32, result.max_tokens));
   result.timeout_ms = std::max(100, std::min(60000, result.timeout_ms));
   if (result.mode != "dictionary" && result.mode != "hybrid")
@@ -93,7 +81,8 @@ SessionState::SessionState(rime::Engine* engine,
       config_(std::move(config)),
       session_id_(std::move(session_id)),
       worker_(WorkerConfig{config_.endpoint, session_id_, config_.mode,
-                           config_.max_candidates, config_.max_tokens,
+                           config_.max_candidates, config_.candidate_max_candidates,
+                           config_.candidate_timeout_ms, config_.max_tokens,
                            config_.timeout_ms}) {}
 
 SessionState::~SessionState() {
@@ -112,10 +101,6 @@ void SessionState::Start() {
   worker_.SetResultCallback([weak](PredictionResult result) {
     if (auto state = weak.lock())
       state->PostResult(std::move(result));
-  });
-  worker_.SetCandidateCallback([weak](CandidateResult result) {
-    if (auto state = weak.lock())
-      state->PostCandidateResult(std::move(result));
   });
   commit_connection_ = context_->commit_notifier().connect([weak](rime::Context* ctx) {
     if (auto state = weak.lock())
@@ -161,12 +146,6 @@ void SessionState::PostResult(PredictionResult result) {
   dispatch_async_f(dispatch_get_main_queue(), completion, &ApplyCompletion);
 }
 
-void SessionState::PostCandidateResult(CandidateResult result) {
-  auto* completion = new CandidateCompletion{weak_from_this(), std::move(result)};
-  dispatch_async_f(dispatch_get_main_queue(), completion,
-                   &ApplyCandidateCompletion);
-}
-
 void SessionState::ApplyResult(PredictionResult result) {
   if (stopped_ || result.request_id != request_id_ || !context_ ||
       !context_->input().empty() || result.candidates.empty()) {
@@ -179,20 +158,6 @@ void SessionState::ApplyResult(PredictionResult result) {
   InstallPredictionSegment();
 }
 
-void SessionState::ApplyCandidateResult(CandidateResult result) {
-  if (stopped_ || result.request_id != request_id_ || !context_ ||
-      context_->input() != result.input) {
-    return;
-  }
-  model_candidates_ = std::move(result.candidates);
-  model_input_ = result.input;
-  if (model_candidates_.empty())
-    return;
-  applying_model_candidates_ = true;
-  context_->update_notifier()(context_);
-  applying_model_candidates_ = false;
-}
-
 void SessionState::OnCommit(rime::Context* context) {
   if (stopped_ || context != context_)
     return;
@@ -203,16 +168,6 @@ void SessionState::OnCommit(rime::Context* context) {
   worker_.SubmitCommit(text);
   if (IsChineseText(text))
     worker_.SubmitPrediction(request_id_, config_.idle_delay_ms);
-}
-
-void SessionState::OnContextUpdate(rime::Context* context) {
-  if (stopped_ || context != context_ || context->input().empty() ||
-      applying_model_candidates_ ||
-      (!model_candidates_.empty() && context->input() == model_input_))
-    return;
-  HideForInput();
-  if (IsPinyinInput(context->input()))
-    worker_.SubmitCandidates(request_id_, context->input());
 }
 
 bool SessionState::MatchesTrigger(const rime::KeyEvent& key) const {
@@ -270,13 +225,6 @@ void SessionState::Invalidate() {
   if (visible_)
     ClearPredictionContext();
   visible_ = false;
-}
-
-std::vector<ModelCandidate> SessionState::CandidatesForInput(
-    const std::string& input) const {
-  if (input != model_input_)
-    return {};
-  return model_candidates_;
 }
 
 bool SessionState::IsPredictionContext() const {

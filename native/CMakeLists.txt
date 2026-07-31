@@ -37,10 +37,12 @@ configure_file(
 
 set(PLUGIN_SOURCES
   src/http_client.cc
+  src/llm_filter.cc
   src/llm_json.cc
   src/llm_module.cc
   src/llm_processor.cc
   src/llm_session.cc
+  src/llm_session_candidates.cc
   src/llm_translator.cc
   src/llm_worker.cc
 )

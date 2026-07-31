@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use mistralrs::{GgufModelBuilder, Model};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     config::{DevicePreference, Settings},
@@ -119,8 +119,9 @@ impl ModelRuntime {
             .enumerate()
             .map(|(index, (score, entry))| candidate_from_entry(index, score, entry))
             .collect::<Vec<_>>();
-        info!(
+        debug!(
             candidates = result.len(),
+            texts = ?result.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
             elapsed_ms = started.elapsed().as_millis() as u64,
             "generated model candidates"
         );

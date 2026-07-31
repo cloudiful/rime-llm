@@ -19,6 +19,8 @@ struct WorkerConfig {
   std::string session_id;
   std::string mode = "free";
   size_t max_candidates = 5;
+  size_t candidate_max_candidates = 16;
+  int candidate_timeout_ms = 1500;
   size_t max_tokens = 8;
   int timeout_ms = 15000;
 };
@@ -29,50 +31,36 @@ struct PredictionResult {
   std::vector<PredictionCandidate> candidates;
 };
 
-struct CandidateResult {
-  uint64_t request_id = 0;
-  std::string input;
-  std::vector<ModelCandidate> candidates;
-};
-
 class LlmWorker {
  public:
   using ResultCallback = std::function<void(PredictionResult)>;
-  using CandidateCallback = std::function<void(CandidateResult)>;
 
   explicit LlmWorker(WorkerConfig config);
   ~LlmWorker();
 
   void SetResultCallback(ResultCallback callback);
-  void SetCandidateCallback(CandidateCallback callback);
   void Start();
   void Stop();
   void SubmitCommit(const std::string& text);
-  void SubmitCandidates(uint64_t request_id, const std::string& input);
+  std::vector<ModelCandidate> FetchCandidates(const std::string& input) const;
   void SubmitPrediction(uint64_t request_id, int delay_ms);
   void Invalidate(uint64_t request_id);
 
  private:
-  enum class PendingKind { kCandidates, kPrediction };
-
   struct PendingRequest {
-    PendingKind kind = PendingKind::kPrediction;
     uint64_t request_id = 0;
     uint64_t serial = 0;
-    std::string input;
     std::chrono::steady_clock::time_point due;
   };
 
   void Run();
   void ResetService();
   void Commit(const std::string& text);
-  void Candidates(PendingRequest request);
   void Predict(PendingRequest request);
   std::string Endpoint(const char* path) const;
 
   WorkerConfig config_;
   ResultCallback result_callback_;
-  CandidateCallback candidate_callback_;
   std::thread thread_;
   std::mutex mutex_;
   std::condition_variable wakeup_;

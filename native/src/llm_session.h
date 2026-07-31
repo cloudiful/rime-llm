@@ -20,11 +20,15 @@ namespace rime_llm {
 
 struct LlmConfig {
   bool enabled = true;
+  bool candidates_enabled = true;
+  bool replace_candidates = true;
   std::string endpoint = "http://127.0.0.1:32123";
   std::string mode = "free";
   std::string trigger;
   int idle_delay_ms = 200;
   size_t max_candidates = 5;
+  size_t candidate_max_candidates = 16;
+  int candidate_timeout_ms = 1500;
   size_t max_tokens = 8;
   int timeout_ms = 15000;
 };
@@ -48,9 +52,9 @@ class SessionState : public std::enable_shared_from_this<SessionState> {
   void InsertSpace();
   void HideForInput();
   std::vector<PredictionCandidate> Candidates() const { return candidates_; }
-  std::vector<ModelCandidate> CandidatesForInput(const std::string& input) const;
+  std::vector<ModelCandidate> CandidatesForInput(const std::string& input);
+  bool ShouldReplaceCandidates() const;
   void ApplyResult(PredictionResult result);
-  void ApplyCandidateResult(CandidateResult result);
 
   static std::shared_ptr<SessionState> Acquire(rime::Engine* engine,
                                                 const LlmConfig& config,
@@ -60,7 +64,6 @@ class SessionState : public std::enable_shared_from_this<SessionState> {
 
  private:
   void PostResult(PredictionResult result);
-  void PostCandidateResult(CandidateResult result);
   void Invalidate();
   void InstallPredictionSegment();
   void ClearPredictionContext();
@@ -78,7 +81,6 @@ class SessionState : public std::enable_shared_from_this<SessionState> {
   bool visible_ = false;
   bool started_ = false;
   bool stopped_ = false;
-  bool applying_model_candidates_ = false;
   rime::connection commit_connection_;
   rime::connection update_connection_;
 };

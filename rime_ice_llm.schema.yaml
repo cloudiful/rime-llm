@@ -39,6 +39,7 @@ engine:
     - lua_translator@*calc_translator
     - lua_translator@*force_gc
   filters:
+    - llm_candidate_filter
     - lua_filter@*corrector
     - reverse_lookup_filter@radical_reverse_lookup
     - lua_filter@*autocap_filter
@@ -61,7 +62,8 @@ llm_candidate_translator:
   enabled: true
   endpoint: http://127.0.0.1:32123/candidates
   max_candidates: 16
-  max_wait_ms: 15000
+  replace_candidates: true
+  max_wait_ms: 1500
   quality_base: 1000
   debug: false
 

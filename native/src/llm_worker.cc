@@ -8,6 +8,10 @@ namespace rime_llm {
 
 LlmWorker::LlmWorker(WorkerConfig config) : config_(std::move(config)) {
   config_.max_candidates = std::max<size_t>(1, std::min<size_t>(16, config_.max_candidates));
+  config_.candidate_max_candidates =
+      std::max<size_t>(1, std::min<size_t>(16, config_.candidate_max_candidates));
+  config_.candidate_timeout_ms =
+      std::max(100, std::min(15000, config_.candidate_timeout_ms));
   config_.max_tokens = std::max<size_t>(1, std::min<size_t>(32, config_.max_tokens));
   config_.timeout_ms = std::max(100, std::min(60000, config_.timeout_ms));
 }
@@ -19,11 +23,6 @@ LlmWorker::~LlmWorker() {
 void LlmWorker::SetResultCallback(ResultCallback callback) {
   std::lock_guard<std::mutex> lock(mutex_);
   result_callback_ = std::move(callback);
-}
-
-void LlmWorker::SetCandidateCallback(CandidateCallback callback) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  candidate_callback_ = std::move(callback);
 }
 
 void LlmWorker::Start() {
@@ -60,34 +59,14 @@ void LlmWorker::SubmitCommit(const std::string& text) {
   wakeup_.notify_one();
 }
 
-void LlmWorker::SubmitCandidates(uint64_t request_id, const std::string& input) {
-  if (input.empty())
-    return;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (stopped_)
-      return;
-    pending_ = PendingRequest{
-        PendingKind::kCandidates,
-        request_id,
-        ++serial_,
-        input,
-        std::chrono::steady_clock::now(),
-    };
-  }
-  wakeup_.notify_one();
-}
-
 void LlmWorker::SubmitPrediction(uint64_t request_id, int delay_ms) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopped_)
       return;
     pending_ = PendingRequest{
-        PendingKind::kPrediction,
         request_id,
         ++serial_,
-        {},
         std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, delay_ms)),
     };
   }
@@ -137,10 +116,7 @@ void LlmWorker::Run() {
       PendingRequest request = *pending_;
       pending_.reset();
       lock.unlock();
-      if (request.kind == PendingKind::kCandidates)
-        Candidates(std::move(request));
-      else
-        Predict(std::move(request));
+      Predict(std::move(request));
       continue;
     }
     wakeup_.wait(lock, [this] { return stopped_ || !commits_.empty() || pending_; });
@@ -175,29 +151,21 @@ void LlmWorker::Commit(const std::string& text) {
   }
 }
 
-void LlmWorker::Candidates(PendingRequest request) {
+std::vector<ModelCandidate> LlmWorker::FetchCandidates(
+    const std::string& input) const {
+  if (input.empty())
+    return {};
   HttpResponse response;
   std::string error;
   if (!PostJson(Endpoint("/candidates"),
-                BuildCandidatesRequest(config_.session_id, request.input,
-                                       config_.max_candidates),
-                config_.timeout_ms, &response, &error)) {
-    return;
-  }
+                BuildCandidatesRequest(config_.session_id, input,
+                                       config_.candidate_max_candidates),
+                config_.candidate_timeout_ms, &response, &error))
+    return {};
   CandidatesResponse parsed;
   if (!ParseCandidatesResponse(response.body, &parsed))
-    return;
-  CandidateResult result;
-  result.request_id = request.request_id;
-  result.input = std::move(request.input);
-  result.candidates = std::move(parsed.candidates);
-  CandidateCallback callback;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    callback = candidate_callback_;
-  }
-  if (callback)
-    callback(std::move(result));
+    return {};
+  return std::move(parsed.candidates);
 }
 
 void LlmWorker::Predict(PendingRequest request) {

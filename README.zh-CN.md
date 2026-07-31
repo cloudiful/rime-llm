@@ -2,8 +2,8 @@
 
 [English](README.md)
 
-`rime-llm` 是 Rime 的本地下一词预测服务。它使用 `mistral.rs` 运行
-Qwen3-0.6B-Q4_K_M，只在内存中保存已上屏上下文，普通 Rime 词典候选仍会立即显示。
+`rime-llm` 是 Rime 的本地候选重排和下一词预测服务。它使用 `mistral.rs` 运行
+Qwen3-0.6B-Q4_K_M，只在内存中保存已上屏上下文。模型返回前保留普通 Rime 候选，返回后用模型排序结果替换当前候选区。
 
 ## 启动服务
 
@@ -35,9 +35,9 @@ Windows x64 CPU 服务压缩包。模型仍在首次启动时下载，不包含�
 
 ## 预测行为
 
-普通拼音输入时，native worker 会在后台请求 `/candidates`，普通 Rime 词典候选仍然立即显示。
-提交中文后，worker 等待 200ms，发送一次 `/predict` 请求并显示最多五个候选。
-worker 不阻塞 Rime 按键路径，同时最多运行一个模型请求，只保留一个最新待处理请求。
+普通拼音输入时，native translator 会为当前输入请求 `/candidates`，最多等待 1500ms，
+这样 Squirrel 能在本次按键刷新时直接显示模型排序结果。服务不可用或超时则回退到普通
+Rime 词典候选。提交中文后，worker 在后台等待 200ms，发送一次 `/predict` 请求并显示最多五个候选。
 
 模式有 `free`（默认）、`dictionary` 和 `hybrid`，可在 schema 的 `prediction` 配置块或
 `rime_ice_llm.custom.yaml.example` 中调整。`Tab`、`Enter` 和 `1-9` 接受预测词；`Space`
