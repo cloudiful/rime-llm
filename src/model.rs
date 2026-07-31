@@ -1,16 +1,22 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use mistralrs::{GgufModelBuilder, Model};
 use tracing::{debug, info, warn};
 
 use crate::{
+    api::CandidatePath,
     config::{DevicePreference, Settings},
     download::ensure_model,
     inference::{append_candidate, raw_logits_for_tokens, tokenize_candidate, tokenize_prompt},
-    lexicon::{Lexicon, LexiconEntry},
-    scoring::{rank_entries_by_scores, score_first_token, score_sequence},
+    lexicon::Lexicon,
+    scoring::{rank_paths, score_first_token, score_sequence_normalized, ScoredPath},
 };
+
+/// Weight assigned to the native-side `base_score` when blending with the
+/// model log-probability. `0.0` makes the model the only signal; `1.0` makes
+/// the native prior dominate.
+const BASE_SCORE_WEIGHT: f32 = 0.3;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct ModelCandidate {
@@ -55,75 +61,69 @@ impl ModelRuntime {
         &self,
         context: &[String],
         input: &str,
+        paths: &[CandidatePath],
         max_candidates: usize,
     ) -> Result<Vec<ModelCandidate>> {
-        let entries = self
-            .lexicon
-            .candidates_for(input, max_candidates.saturating_mul(4));
-        if entries.is_empty() {
+        if paths.is_empty() {
+            debug!("no candidate paths supplied; returning empty result");
             return Ok(Vec::new());
         }
 
-        let prompt = build_prompt(context, input, self.context_window);
         let started = Instant::now();
+        let prompt = build_prompt(context, input, self.context_window);
         let prompt_tokens = tokenize_prompt(&self.model, &prompt).await?;
         let prompt_logits = raw_logits_for_tokens(&self.model, &prompt_tokens).await?;
         let first_logits = prompt_logits.last().context("prompt returned no logits")?;
-        let mut tokenized_entries = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let token_ids = tokenize_candidate(&self.model, &entry.text).await?;
-            if token_ids.is_empty() {
+
+        let mut tokenized_paths: Vec<(CandidatePath, Vec<u32>)> = Vec::with_capacity(paths.len());
+        for path in paths {
+            if path.text.is_empty() {
                 continue;
             }
-            tokenized_entries.push((entry, token_ids));
-        }
-
-        let mut first_scores = Vec::with_capacity(tokenized_entries.len());
-        let mut shared_first_tokens = HashMap::<u32, usize>::new();
-        for (_, token_ids) in &tokenized_entries {
-            if let Some(&token_id) = token_ids.first() {
-                *shared_first_tokens.entry(token_id).or_default() += 1;
+            match tokenize_candidate(&self.model, &path.text).await {
+                Ok(token_ids) if !token_ids.is_empty() => {
+                    tokenized_paths.push((path.clone(), token_ids));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    debug!(error = %error, path = %path.id, "skipping untokenizable path");
+                }
             }
         }
-        for (_entry, token_ids) in &tokenized_entries {
-            let score = score_first_token(token_ids, first_logits)
-                .context("candidate first token is outside model vocabulary")?;
-            first_scores.push(score);
+        if tokenized_paths.is_empty() {
+            return Ok(Vec::new());
         }
 
-        // A single next-token pass cannot distinguish candidates that share a
-        // tokenizer prefix. Re-score those groups against the full candidate
-        // sequence; unrelated groups keep the fast first-token score.
-        let mut model_scores = first_scores.clone();
-        for (index, (_, token_ids)) in tokenized_entries.iter().enumerate() {
-            let Some(&first_token) = token_ids.first() else {
-                continue;
+        let mut scored_paths = Vec::with_capacity(tokenized_paths.len());
+        for (path, token_ids) in tokenized_paths {
+            let model_score = if token_ids.len() == 1 {
+                score_first_token(&token_ids, first_logits)
+                    .context("candidate first token is outside model vocabulary")?
+            } else {
+                let sequence = append_candidate(&prompt_tokens, &token_ids);
+                let logits = raw_logits_for_tokens(&self.model, &sequence).await?;
+                score_sequence_normalized(&logits, prompt_tokens.len(), &token_ids)
+                    .context("candidate sequence returned insufficient logits")?
             };
-            if shared_first_tokens.get(&first_token).copied().unwrap_or(0) < 2 {
-                continue;
-            }
-            let sequence = append_candidate(&prompt_tokens, token_ids);
-            let logits = raw_logits_for_tokens(&self.model, &sequence).await?;
-            if let Some(score) = score_sequence(&logits, prompt_tokens.len(), token_ids) {
-                model_scores[index] = score;
-            }
+            scored_paths.push(ScoredPath {
+                id: path.id,
+                text: path.text,
+                preedit: path.preedit,
+                consumed_keys: path.consumedkeys,
+                base_score: path.base_score,
+                model_score,
+            });
         }
 
-        let scored = tokenized_entries
+        let result = rank_paths(scored_paths, max_candidates, BASE_SCORE_WEIGHT)
             .into_iter()
-            .zip(model_scores)
-            .map(|((entry, _token_ids), model_score)| (model_score, entry))
-            .collect();
-        let result = rank_entries_by_scores(scored, max_candidates)
-            .into_iter()
-            .enumerate()
-            .map(|(index, (score, entry))| candidate_from_entry(index, score, entry))
+            .map(|scored| candidate_from_path(&scored))
             .collect::<Vec<_>>();
         debug!(
             candidates = result.len(),
             texts = ?result.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
             elapsed_ms = started.elapsed().as_millis() as u64,
-            "generated model candidates"
+            "generated model candidates from native paths"
         );
         Ok(result)
     }
@@ -195,22 +195,22 @@ fn build_prompt(context: &[String], input: &str, context_window: usize) -> Strin
         .collect::<String>();
     if context.is_empty() {
         format!(
-            "请根据拼音输入预测一个最可能的中文词。只输出中文，不要解释、标点或拼音。拼音：{input}"
+            "请根据拼音输入判断候选中文短语的自然程度。只输出中文，不要解释、标点或拼音。拼音：{input}"
         )
     } else {
         format!(
-            "请根据前文和拼音输入预测一个最可能的中文词。只输出中文，不要解释、标点或拼音。前文：{context}\n拼音：{input}"
+            "请根据前文和拼音输入判断候选中文短语的自然程度。只输出中文，不要解释、标点或拼音。前文：{context}\n拼音：{input}"
         )
     }
 }
 
-fn candidate_from_entry(index: usize, score: f32, entry: LexiconEntry) -> ModelCandidate {
+fn candidate_from_path(scored: &ScoredPath) -> ModelCandidate {
     ModelCandidate {
-        id: format!("m{index}"),
-        text: entry.text,
-        preedit: entry.preedit,
-        consumedkeys: entry.consumed_keys,
-        score,
+        id: scored.id.clone(),
+        text: scored.text.clone(),
+        preedit: scored.preedit.clone(),
+        consumedkeys: scored.consumed_keys,
+        score: scored.final_score(BASE_SCORE_WEIGHT),
         kind: "llm_phrase".to_string(),
     }
 }
@@ -229,15 +229,17 @@ mod tests {
 
     #[test]
     fn candidate_preserves_partial_consumption() {
-        let entry = LexiconEntry {
+        let scored = ScoredPath {
+            id: "n0".into(),
             text: "不".into(),
-            code: "bu".into(),
             preedit: "bu".into(),
             consumed_keys: 2,
-            prior: 10.0,
+            base_score: 10.0,
+            model_score: 1.0,
         };
-        let candidate = candidate_from_entry(0, 1.0, entry);
+        let candidate = candidate_from_path(&scored);
         assert_eq!(candidate.consumedkeys, 2);
         assert_eq!(candidate.preedit, "bu");
+        assert_eq!(candidate.text, "不");
     }
 }

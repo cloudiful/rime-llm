@@ -152,15 +152,16 @@ void LlmWorker::Commit(const std::string& text) {
 }
 
 std::vector<ModelCandidate> LlmWorker::FetchCandidates(
-    const std::string& input) const {
-  if (input.empty())
+    const std::string& input,
+    const std::vector<CandidatePath>& paths) const {
+  if (input.empty() || paths.empty())
     return {};
   HttpResponse response;
   std::string error;
   if (!PostJson(Endpoint("/candidates"),
                 BuildCandidatesRequest(config_.session_id, input,
-                                       config_.candidate_max_candidates),
-                config_.candidate_timeout_ms, &response, &error))
+                                       config_.candidate_max_candidates, paths),
+                 config_.candidate_timeout_ms, &response, &error))
     return {};
   CandidatesResponse parsed;
   if (!ParseCandidatesResponse(response.body, &parsed))

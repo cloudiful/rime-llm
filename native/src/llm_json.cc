@@ -106,11 +106,27 @@ std::string BuildCommitRequest(const std::string& session_id,
 
 std::string BuildCandidatesRequest(const std::string& session_id,
                                    const std::string& input,
-                                   size_t max_candidates) {
+                                   size_t max_candidates,
+                                   const std::vector<CandidatePath>& paths) {
   max_candidates = max_candidates == 0 ? 1 : max_candidates;
-  return "{\"session_id\":" + JsonEscape(session_id) +
-         ",\"input\":" + JsonEscape(input) +
-         ",\"max_candidates\":" + std::to_string(max_candidates) + "}";
+  std::string result = "{\"session_id\":" + JsonEscape(session_id) +
+                       ",\"input\":" + JsonEscape(input) +
+                       ",\"max_candidates\":" +
+                       std::to_string(max_candidates) + ",\"paths\":[";
+  for (size_t i = 0; i < paths.size(); ++i) {
+    if (i > 0)
+      result.push_back(',');
+    const auto& path = paths[i];
+    result += "{\"id\":" + JsonEscape(path.id) +
+              ",\"text\":" + JsonEscape(path.text) +
+              ",\"preedit\":" + JsonEscape(path.preedit) +
+              ",\"consumedkeys\":" +
+              std::to_string(path.consumedkeys) +
+              ",\"base_score\":" +
+              std::to_string(path.base_score) + "}";
+  }
+  result += "]}";
+  return result;
 }
 
 std::string BuildPredictionRequest(const std::string& session_id,

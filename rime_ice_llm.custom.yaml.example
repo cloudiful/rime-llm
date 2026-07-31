@@ -9,3 +9,7 @@ prediction:
   max_candidates: 5
   max_tokens: 8
   timeout_ms: 15000
+
+llm_candidate_translator:
+  max_paths: 128
+  max_homophones: 8

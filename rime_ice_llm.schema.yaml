@@ -64,6 +64,8 @@ llm_candidate_translator:
   max_candidates: 16
   replace_candidates: true
   max_wait_ms: 1500
+  max_paths: 128
+  max_homophones: 8
   quality_base: 1000
   debug: false
 

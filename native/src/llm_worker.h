@@ -42,7 +42,9 @@ class LlmWorker {
   void Start();
   void Stop();
   void SubmitCommit(const std::string& text);
-  std::vector<ModelCandidate> FetchCandidates(const std::string& input) const;
+  std::vector<ModelCandidate> FetchCandidates(
+      const std::string& input,
+      const std::vector<CandidatePath>& paths) const;
   void SubmitPrediction(uint64_t request_id, int delay_ms);
   void Invalidate(uint64_t request_id);
 

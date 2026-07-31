@@ -8,8 +8,6 @@
 #include <rime/ticket.h>
 #include <rime/translation.h>
 
-#include <algorithm>
-
 namespace rime_llm {
 
 LlmTranslator::LlmTranslator(const rime::Ticket& ticket,
@@ -34,15 +32,10 @@ rime::an<rime::Translation> LlmTranslator::Query(
   } else {
     const auto candidates = state_->CandidatesForInput(input);
     for (const auto& item : candidates) {
-      const int end = std::min(
-          segment.end,
-          segment.start + static_cast<int>(item.consumedkeys));
-      if (end <= segment.start)
-        continue;
-      auto candidate = rime::New<rime::SimpleCandidate>(
-          "llm_candidate", segment.start, end, item.text, item.preedit);
-      candidate->set_quality(1000.0 + item.score);
-      translation->Append(candidate);
+      if (auto candidate = state_->CandidateForModel(
+              item, segment.start, segment.end)) {
+        translation->Append(candidate);
+      }
     }
   }
   return translation->size() == 0 ? nullptr : translation;

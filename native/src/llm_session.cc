@@ -56,6 +56,10 @@ LlmConfig ReadConfig(const rime::Ticket& ticket) {
   ReadInt(config, "prediction/max_candidates", &result.max_candidates);
   ReadInt(config, "llm_candidate_translator/max_candidates",
           &result.candidate_max_candidates);
+  ReadInt(config, "llm_candidate_translator/max_paths",
+          &result.candidate_max_paths);
+  ReadInt(config, "llm_candidate_translator/max_homophones",
+          &result.candidate_max_homophones);
   ReadInt(config, "llm_candidate_translator/max_wait_ms",
           &result.candidate_timeout_ms);
   ReadInt(config, "prediction/max_tokens", &result.max_tokens);
@@ -64,6 +68,10 @@ LlmConfig ReadConfig(const rime::Ticket& ticket) {
   result.max_candidates = std::max<size_t>(1, std::min<size_t>(16, result.max_candidates));
   result.candidate_max_candidates =
       std::max<size_t>(1, std::min<size_t>(16, result.candidate_max_candidates));
+  result.candidate_max_paths =
+      std::max<size_t>(1, std::min<size_t>(512, result.candidate_max_paths));
+  result.candidate_max_homophones =
+      std::max<size_t>(1, std::min<size_t>(32, result.candidate_max_homophones));
   result.candidate_timeout_ms =
       std::max(100, std::min(1500, result.candidate_timeout_ms));
   result.max_tokens = std::max<size_t>(1, std::min<size_t>(32, result.max_tokens));
@@ -80,6 +88,7 @@ SessionState::SessionState(rime::Engine* engine,
       context_(engine ? engine->context() : nullptr),
       config_(std::move(config)),
       session_id_(std::move(session_id)),
+      candidate_graph_(engine),
       worker_(WorkerConfig{config_.endpoint, session_id_, config_.mode,
                            config_.max_candidates, config_.candidate_max_candidates,
                            config_.candidate_timeout_ms, config_.max_tokens,
@@ -221,6 +230,7 @@ void SessionState::Invalidate() {
   worker_.Invalidate(request_id_);
   candidates_.clear();
   model_candidates_.clear();
+  candidate_paths_.clear();
   model_input_.clear();
   if (visible_)
     ClearPredictionContext();

@@ -22,12 +22,26 @@ use crate::{
     session::SessionStore,
 };
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CandidatePath {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub preedit: String,
+    #[serde(default)]
+    pub consumedkeys: usize,
+    #[serde(default)]
+    pub base_score: f32,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CandidatesRequest {
     pub session_id: String,
     pub input: String,
     #[serde(default)]
     pub max_candidates: Option<usize>,
+    #[serde(default)]
+    pub paths: Vec<CandidatePath>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -232,7 +246,9 @@ async fn candidates(
     state.stats.record_model_request();
     match timeout(
         Duration::from_millis(state.settings.max_wait_ms),
-        state.runtime.candidates(&context, &input, max_candidates),
+        state
+            .runtime
+            .candidates(&context, &input, &request.paths, max_candidates),
     )
     .await
     {
@@ -382,4 +398,104 @@ fn normalize_input(input: &str) -> String {
         .filter(|character| character.is_ascii_alphabetic())
         .map(|character| character.to_ascii_lowercase())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(id: &str, text: &str, base: f32, consumedkeys: usize) -> CandidatePath {
+        CandidatePath {
+            id: id.into(),
+            text: text.into(),
+            preedit: String::new(),
+            consumedkeys,
+            base_score: base,
+        }
+    }
+
+    #[test]
+    fn candidates_request_accepts_paths_with_default_optional_fields() {
+        let json = r#"{
+            "session_id": "abc",
+            "input": "buru",
+            "max_candidates": 4,
+            "paths": [
+                {"id": "n0", "text": "不如", "preedit": "bu ru", "consumedkeys": 4, "base_score": 1.5},
+                {"id": "n1", "text": "不入", "base_score": -0.2}
+            ]
+        }"#;
+        let request: CandidatesRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.session_id, "abc");
+        assert_eq!(request.paths.len(), 2);
+        assert_eq!(request.paths[0].text, "不如");
+        assert_eq!(request.paths[0].consumedkeys, 4);
+        assert_eq!(request.paths[0].base_score, 1.5);
+        assert_eq!(request.paths[1].preedit, "");
+        assert_eq!(request.paths[1].consumedkeys, 0);
+        assert_eq!(request.paths[1].base_score, -0.2);
+    }
+
+    #[test]
+    fn candidates_request_without_paths_defaults_to_empty_list() {
+        let json = r#"{"session_id":"abc","input":"buru"}"#;
+        let request: CandidatesRequest = serde_json::from_str(json).unwrap();
+        assert!(request.paths.is_empty());
+        assert!(request.max_candidates.is_none());
+    }
+
+    #[test]
+    fn candidate_path_serialization_round_trip() {
+        let original = CandidatePath {
+            id: "x".into(),
+            text: "你好".into(),
+            preedit: "ni hao".into(),
+            consumedkeys: 5,
+            base_score: 0.75,
+        };
+        let value = serde_json::to_value(&original).unwrap();
+        assert_eq!(value["id"], "x");
+        assert_eq!(value["text"], "你好");
+        assert_eq!(value["preedit"], "ni hao");
+        assert_eq!(value["consumedkeys"], 5);
+        assert_eq!(value["base_score"], 0.75);
+        let decoded: CandidatePath = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn normalize_input_filters_pinyin_only() {
+        assert_eq!(normalize_input("Ni Hao! 不如 bu-ru"), "nihaoburu");
+    }
+
+    #[test]
+    fn path_helper_builds_expected_shape() {
+        let p = path("n2", "不如", 0.0, 4);
+        assert_eq!(p.id, "n2");
+        assert_eq!(p.text, "不如");
+        assert_eq!(p.consumedkeys, 4);
+    }
+
+    #[test]
+    fn candidates_response_status_round_trip() {
+        let response = CandidatesResponse {
+            status: "ready".into(),
+            candidates: vec![ModelCandidate {
+                id: "m0".into(),
+                text: "不如".into(),
+                preedit: "bu ru".into(),
+                consumedkeys: 4,
+                score: -0.42,
+                kind: "llm_phrase".into(),
+            }],
+            source: "model".into(),
+            elapsed_ms: 7,
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["status"], "ready");
+        assert_eq!(value["candidates"][0]["type"], "llm_phrase");
+        assert_eq!(value["candidates"][0]["consumedkeys"], 4);
+        let decoded: CandidatesResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, response);
+    }
 }

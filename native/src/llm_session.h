@@ -2,6 +2,7 @@
 #define RIME_LLM_SESSION_H_
 
 #include "llm_json.h"
+#include "rime_candidate_graph.h"
 #include "llm_worker.h"
 
 #include <rime/common.h>
@@ -10,6 +11,7 @@
 #include <mutex>
 
 namespace rime {
+class Candidate;
 class Context;
 class Engine;
 class KeyEvent;
@@ -28,6 +30,8 @@ struct LlmConfig {
   int idle_delay_ms = 200;
   size_t max_candidates = 5;
   size_t candidate_max_candidates = 16;
+  size_t candidate_max_paths = 128;
+  size_t candidate_max_homophones = 8;
   int candidate_timeout_ms = 1500;
   size_t max_tokens = 8;
   int timeout_ms = 15000;
@@ -53,6 +57,10 @@ class SessionState : public std::enable_shared_from_this<SessionState> {
   void HideForInput();
   std::vector<PredictionCandidate> Candidates() const { return candidates_; }
   std::vector<ModelCandidate> CandidatesForInput(const std::string& input);
+  rime::an<rime::Candidate> CandidateForModel(
+      const ModelCandidate& model_candidate,
+      int segment_start,
+      int segment_end) const;
   bool ShouldReplaceCandidates() const;
   void ApplyResult(PredictionResult result);
 
@@ -73,9 +81,11 @@ class SessionState : public std::enable_shared_from_this<SessionState> {
   rime::Context* context_;
   LlmConfig config_;
   std::string session_id_;
+  RimeCandidateGraph candidate_graph_;
   rime_llm::LlmWorker worker_;
   std::vector<PredictionCandidate> candidates_;
   std::vector<ModelCandidate> model_candidates_;
+  std::vector<RimeCandidatePath> candidate_paths_;
   std::string model_input_;
   uint64_t request_id_ = 0;
   bool visible_ = false;

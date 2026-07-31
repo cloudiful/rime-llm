@@ -19,6 +19,14 @@ struct PredictionResponse {
   std::vector<PredictionCandidate> candidates;
 };
 
+struct CandidatePath {
+  std::string id;
+  std::string text;
+  std::string preedit;
+  uint64_t consumedkeys = 0;
+  double base_score = 0;
+};
+
 struct ModelCandidate {
   std::string id;
   std::string text;
@@ -37,8 +45,9 @@ std::string BuildResetRequest(const std::string& session_id);
 std::string BuildCommitRequest(const std::string& session_id,
                                const std::string& text);
 std::string BuildCandidatesRequest(const std::string& session_id,
-                                   const std::string& input,
-                                   size_t max_candidates);
+                                    const std::string& input,
+                                    size_t max_candidates,
+                                    const std::vector<CandidatePath>& paths);
 std::string BuildPredictionRequest(const std::string& session_id,
                                    uint64_t revision,
                                    const std::string& mode,

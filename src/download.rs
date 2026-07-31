@@ -49,7 +49,10 @@ pub async fn ensure_model(settings: &Settings) -> Result<PathBuf, DownloadError>
     if !is_valid_gguf(&path).await? {
         warn!(path = %path.display(), "cached GGUF is corrupt, removing and retrying");
         if let Ok(target) = fs::read_link(&path).await {
-            let resolved = path.parent().map(|p| p.join(&target)).unwrap_or_else(|| target);
+            let resolved = path
+                .parent()
+                .map(|p| p.join(&target))
+                .unwrap_or_else(|| target);
             let _ = fs::remove_file(resolved).await;
         }
         fs::remove_file(&path).await?;

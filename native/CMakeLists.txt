@@ -41,6 +41,7 @@ set(PLUGIN_SOURCES
   src/llm_json.cc
   src/llm_module.cc
   src/llm_processor.cc
+  src/rime_candidate_graph.cc
   src/llm_session.cc
   src/llm_session_candidates.cc
   src/llm_translator.cc
@@ -53,6 +54,7 @@ target_include_directories(rime-llm-predict PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_BINARY_DIR}
   ${RIME_SOURCE_DIR}/src
+  ${RIME_SOURCE_DIR}/include
   ${BOOST_INCLUDE_DIR}
 )
 target_link_libraries(rime-llm-predict PRIVATE ${RIME_LIBRARY})
