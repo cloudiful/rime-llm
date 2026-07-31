@@ -2,22 +2,56 @@
 
 [Chinese](README.zh-CN.md)
 
-`rime-llm` is an experimental local Rime schema backed by a Candle-based `mistral.rs` runtime. It loads a Qwen3 GGUF model, scores candidates constrained by a local Rime dictionary, and keeps committed context in memory only.
+`rime-llm` is a local next-word prediction service for Rime. It uses
+Qwen3-0.6B-Q4_K_M through `mistral.rs`, keeps committed context in memory,
+and leaves ordinary Rime dictionary candidates available immediately.
 
-Build and run it from this directory:
+## Run the service
 
 ```bash
-cargo build --release
 cp config.example.toml config.toml
-./target/release/rime-llm
+cargo run --features metal
 ```
 
-Metal is optional. The default build uses CPU and works without Xcode's Metal Toolchain. After installing that toolchain, build with `cargo build --release --features metal` for Metal acceleration; the runtime still falls back to CPU if Metal initialization fails.
+The first start downloads the model into `models/`. Use `device = "cpu"` when
+Metal is unavailable. The service listens on `127.0.0.1:32123` by default.
 
-On first startup the service downloads `unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` into `models/`. Set `device = "cpu"` when Metal is unavailable; the default is Metal with runtime CPU fallback. The model file is ignored by Git.
+## Use with Squirrel
 
-The repository includes a snapshot of the mature [rime-ice](https://github.com/iDvel/rime-ice) Chinese dictionary under `data/rime-ice/`. It is used by default when the service is run from this project. Set `dictionary_root` in `config.toml`, or `RIME_LLM_DICTIONARY_ROOT`, to use another Rime dictionary root. A custom root should contain `rime_ice.dict.yaml`; its enabled `import_tables` are loaded, while a root without that manifest falls back to `cn_dicts/*.yaml`.
+The experimental `rime_ice_llm` schema is included in this repository. Plum
+can install the schema with the root `recipe.yaml`; it does not modify
+`default.custom.yaml` or other personal configuration.
 
-The application code is Apache-2.0. The bundled dictionary is a separate GPL-3.0-only data asset; its license, source commit, credits, and update procedure are documented in [`data/rime-ice/SOURCE.md`](data/rime-ice/SOURCE.md). Keep both license notices when distributing the project. The dictionary can be updated independently with `scripts/update-rime-ice.sh`; the script downloads dictionary files only, not the rest of the upstream repository.
+The native plugin is currently macOS Apple Silicon only and must be built
+against the librime 1.16 dylib shipped by Squirrel. Follow
+[`docs/native-plugin.md`](docs/native-plugin.md) to build and copy
+`librime-llm-predict.dylib` into Squirrel's bundled `rime-plugins` directory.
+Then redeploy Rime and select `雾凇拼音（本地模型）` (`rime_ice_llm`).
 
-After rebuilding the Rime configuration, select `雾凇拼音（本地模型）` (`rime_ice_llm`) in Squirrel. The service provides `GET /healthz`, `POST /candidates`, `POST /commit`, `POST /reset`, and `GET /stats`. When it is unavailable, the experimental schema falls back to its ordinary Rime translator; the normal `rime_ice` schema is unchanged.
+The old Lua translator remains in the Rime configuration as a fallback, but
+the default schema no longer loads it. When the service or plugin is
+unavailable, ordinary Rime input continues to work.
+
+## Prediction behavior
+
+While entering ordinary pinyin, the native worker requests `/candidates` in
+the background; ordinary Rime dictionary candidates remain immediate. After a
+Chinese commit, it waits 200 ms, sends one `/predict` request, and displays
+up to five candidates. The worker never blocks the Rime key path; it keeps at
+most one model request running and one latest pending request.
+
+Modes are `free` (default), `dictionary`, and `hybrid`. Configure them in the
+`prediction` block of the schema or in
+`rime_ice_llm.custom.yaml.example`. `Tab`, `Enter`, and `1-9` accept a
+prediction. `Space` always commits a literal space, and `Esc` closes the
+prediction. Set `prediction.trigger` to prefetch without automatic popup.
+
+The service exposes `GET /healthz`, `POST /candidates`, `POST /predict`,
+`POST /commit`, `POST /reset`, and `GET /stats`.
+
+The bundled dictionary is a snapshot of [rime-ice](https://github.com/iDvel/rime-ice)
+and is separately licensed GPL-3.0-only. Keep
+[`data/rime-ice/LICENSE`](data/rime-ice/LICENSE) and
+[`data/rime-ice/SOURCE.md`](data/rime-ice/SOURCE.md) when redistributing it.
+Update dictionary files only with `scripts/update-rime-ice.sh`. The
+application code is Apache-2.0.

@@ -68,6 +68,18 @@ impl Lexicon {
         candidates
     }
 
+    pub fn top_entries(&self, max_entries: usize) -> Vec<LexiconEntry> {
+        let mut entries = self.by_code.values().flatten().cloned().collect::<Vec<_>>();
+        entries.sort_by(|left, right| right.prior.total_cmp(&left.prior));
+        entries.dedup_by(|right, left| right.text == left.text);
+        entries.truncate(max_entries);
+        entries
+    }
+
+    pub fn contains_word(&self, word: &str) -> bool {
+        self.pinyin_by_word.contains_key(word)
+    }
+
     fn load_file(&mut self, path: &Path) -> Result<(), std::io::Error> {
         if !path.is_file() {
             return Ok(());

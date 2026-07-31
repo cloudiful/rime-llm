@@ -7,6 +7,8 @@ use std::{
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::prediction::PredictionMode;
+
 fn default_bind_addr() -> SocketAddr {
     "127.0.0.1:32123"
         .parse()
@@ -76,6 +78,18 @@ fn default_max_context_chars() -> usize {
     256
 }
 
+fn default_prediction_max_candidates() -> usize {
+    5
+}
+
+fn default_prediction_max_tokens() -> usize {
+    8
+}
+
+fn default_prediction_timeout_ms() -> u64 {
+    15_000
+}
+
 fn default_download_timeout_secs() -> u64 {
     3600
 }
@@ -106,6 +120,10 @@ pub struct Settings {
     pub max_candidates: usize,
     pub max_wait_ms: u64,
     pub max_context_chars: usize,
+    pub prediction_mode: PredictionMode,
+    pub prediction_max_candidates: usize,
+    pub prediction_max_tokens: usize,
+    pub prediction_timeout_ms: u64,
     pub download_timeout_secs: u64,
     pub dictionary_root: PathBuf,
 }
@@ -123,6 +141,10 @@ impl Default for Settings {
             max_candidates: default_max_candidates(),
             max_wait_ms: default_max_wait_ms(),
             max_context_chars: default_max_context_chars(),
+            prediction_mode: PredictionMode::default(),
+            prediction_max_candidates: default_prediction_max_candidates(),
+            prediction_max_tokens: default_prediction_max_tokens(),
+            prediction_timeout_ms: default_prediction_timeout_ms(),
             download_timeout_secs: default_download_timeout_secs(),
             dictionary_root: default_dictionary_root(),
         }
@@ -224,6 +246,21 @@ impl Settings {
         if let Some(value) = env::var_os("RIME_LLM_MAX_CONTEXT_CHARS") {
             self.max_context_chars = parse_env_number("RIME_LLM_MAX_CONTEXT_CHARS", &value)?;
         }
+        if let Some(value) = env::var_os("RIME_LLM_PREDICTION_MODE") {
+            self.prediction_mode = parse_prediction_mode(&value)?;
+        }
+        if let Some(value) = env::var_os("RIME_LLM_PREDICTION_MAX_CANDIDATES") {
+            self.prediction_max_candidates =
+                parse_env_number("RIME_LLM_PREDICTION_MAX_CANDIDATES", &value)?;
+        }
+        if let Some(value) = env::var_os("RIME_LLM_PREDICTION_MAX_TOKENS") {
+            self.prediction_max_tokens =
+                parse_env_number("RIME_LLM_PREDICTION_MAX_TOKENS", &value)?;
+        }
+        if let Some(value) = env::var_os("RIME_LLM_PREDICTION_TIMEOUT_MS") {
+            self.prediction_timeout_ms =
+                parse_env_number("RIME_LLM_PREDICTION_TIMEOUT_MS", &value)?;
+        }
         if let Some(value) = env::var_os("RIME_LLM_DOWNLOAD_TIMEOUT_SECS") {
             self.download_timeout_secs =
                 parse_env_number("RIME_LLM_DOWNLOAD_TIMEOUT_SECS", &value)?;
@@ -268,6 +305,21 @@ impl Settings {
                 "max_context_chars must be between 1 and 4096".to_string(),
             ));
         }
+        if self.prediction_max_candidates == 0 || self.prediction_max_candidates > 16 {
+            return Err(ConfigError::Invalid(
+                "prediction_max_candidates must be between 1 and 16".to_string(),
+            ));
+        }
+        if self.prediction_max_tokens == 0 || self.prediction_max_tokens > 32 {
+            return Err(ConfigError::Invalid(
+                "prediction_max_tokens must be between 1 and 32".to_string(),
+            ));
+        }
+        if self.prediction_timeout_ms == 0 || self.prediction_timeout_ms > 60_000 {
+            return Err(ConfigError::Invalid(
+                "prediction_timeout_ms must be between 1 and 60000".to_string(),
+            ));
+        }
         if self.download_timeout_secs == 0 {
             return Err(ConfigError::Invalid(
                 "download_timeout_secs must be positive".to_string(),
@@ -297,6 +349,17 @@ where
         .map_err(|_| ConfigError::Invalid(format!("{name} must be a positive integer")))
 }
 
+fn parse_prediction_mode(value: &std::ffi::OsStr) -> Result<PredictionMode, ConfigError> {
+    match value.to_string_lossy().to_ascii_lowercase().as_str() {
+        "free" => Ok(PredictionMode::Free),
+        "dictionary" => Ok(PredictionMode::Dictionary),
+        "hybrid" => Ok(PredictionMode::Hybrid),
+        other => Err(ConfigError::Invalid(format!(
+            "RIME_LLM_PREDICTION_MODE must be free, dictionary, or hybrid, got {other}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,8 +373,10 @@ mod tests {
 
     #[test]
     fn model_file_cannot_escape_model_dir() {
-        let mut settings = Settings::default();
-        settings.model_file = "../model.gguf".into();
+        let settings = Settings {
+            model_file: "../model.gguf".into(),
+            ..Settings::default()
+        };
         assert!(settings.normalize_and_validate().is_err());
     }
 

@@ -14,6 +14,7 @@ pub struct SessionStore {
 #[derive(Default)]
 struct Session {
     commits: VecDeque<String>,
+    revision: u64,
 }
 
 impl SessionStore {
@@ -32,21 +33,35 @@ impl SessionStore {
             .unwrap_or_default()
     }
 
-    pub async fn commit(&self, session_id: &str, text: &str) {
+    pub async fn revision(&self, session_id: &str) -> u64 {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .map(|session| session.revision)
+            .unwrap_or_default()
+    }
+
+    pub async fn commit(&self, session_id: &str, text: &str) -> u64 {
         if session_id.is_empty() || text.is_empty() {
-            return;
+            return self.revision(session_id).await;
         }
         let mut sessions = self.sessions.lock().await;
         let session = sessions.entry(session_id.to_string()).or_default();
         session.commits.push_back(text.to_string());
+        session.revision = session.revision.wrapping_add(1);
         trim_context(session, self.max_chars);
+        session.revision
     }
 
-    pub async fn reset(&self, session_id: &str) {
+    pub async fn reset(&self, session_id: &str) -> u64 {
         if session_id.is_empty() {
-            return;
+            return 0;
         }
-        self.sessions.lock().await.remove(session_id);
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions.entry(session_id.to_string()).or_default();
+        session.commits.clear();
+        session.revision = session.revision.wrapping_add(1);
+        session.revision
     }
 }
 
@@ -100,8 +115,17 @@ mod tests {
         let store = SessionStore::new(20);
         store.commit("a", "甲").await;
         store.commit("b", "乙").await;
-        store.reset("a").await;
+        assert_eq!(store.reset("a").await, 2);
         assert!(store.context("a").await.is_empty());
         assert_eq!(store.context("b").await, vec!["乙"]);
+    }
+
+    #[tokio::test]
+    async fn revision_changes_on_commit_and_reset() {
+        let store = SessionStore::new(20);
+        assert_eq!(store.revision("a").await, 0);
+        assert_eq!(store.commit("a", "甲").await, 1);
+        assert_eq!(store.reset("a").await, 2);
+        assert_eq!(store.revision("a").await, 2);
     }
 }

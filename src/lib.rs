@@ -5,5 +5,7 @@ pub mod download;
 pub mod inference;
 pub mod lexicon;
 pub mod model;
+pub mod predict_queue;
+pub mod prediction;
 pub mod scoring;
 pub mod session;

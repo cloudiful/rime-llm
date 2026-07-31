@@ -17,6 +17,8 @@ use tokio::time::timeout;
 use crate::{
     config::Settings,
     model::{ModelCandidate, ModelRuntime},
+    predict_queue::PredictionCoordinator,
+    prediction::{PredictionCandidate, PredictionMode},
     session::SessionStore,
 };
 
@@ -43,6 +45,27 @@ pub struct CommitRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct PredictionRequest {
+    pub session_id: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub mode: Option<PredictionMode>,
+    #[serde(default)]
+    pub max_candidates: Option<usize>,
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PredictionResponse {
+    pub status: String,
+    pub revision: u64,
+    pub candidates: Vec<PredictionCandidate>,
+    pub source: String,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ResetRequest {
     pub session_id: String,
 }
@@ -64,10 +87,13 @@ struct StatsResponse {
     model_successes: u64,
     fallbacks: u64,
     timeouts: u64,
+    prediction_requests: u64,
+    prediction_successes: u64,
+    prediction_stale: u64,
 }
 
 #[derive(Default)]
-pub struct Stats {
+pub(crate) struct Stats {
     candidate_requests: AtomicU64,
     commits: AtomicU64,
     resets: AtomicU64,
@@ -75,9 +101,40 @@ pub struct Stats {
     model_successes: AtomicU64,
     fallbacks: AtomicU64,
     timeouts: AtomicU64,
+    prediction_requests: AtomicU64,
+    prediction_successes: AtomicU64,
+    prediction_stale: AtomicU64,
 }
 
 impl Stats {
+    pub(crate) fn record_prediction_request(&self) {
+        self.prediction_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_prediction_success(&self) {
+        self.prediction_successes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_prediction_stale(&self) {
+        self.prediction_stale.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_model_request(&self) {
+        self.model_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_model_success(&self) {
+        self.model_successes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_fallback(&self) {
+        self.fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_timeout(&self) {
+        self.timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> StatsResponse {
         let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
         StatsResponse {
@@ -88,25 +145,42 @@ impl Stats {
             model_successes: load(&self.model_successes),
             fallbacks: load(&self.fallbacks),
             timeouts: load(&self.timeouts),
+            prediction_requests: load(&self.prediction_requests),
+            prediction_successes: load(&self.prediction_successes),
+            prediction_stale: load(&self.prediction_stale),
         }
     }
 }
 
 #[derive(Clone)]
 pub struct AppState {
-    pub settings: Settings,
-    pub runtime: Arc<ModelRuntime>,
-    pub sessions: SessionStore,
-    pub stats: Arc<Stats>,
+    pub(crate) settings: Settings,
+    pub(crate) runtime: Arc<ModelRuntime>,
+    pub(crate) sessions: SessionStore,
+    pub(crate) predictions: Arc<PredictionCoordinator>,
+    pub(crate) stats: Arc<Stats>,
 }
 
 impl AppState {
     pub fn new(settings: Settings, runtime: ModelRuntime) -> Self {
+        let runtime = Arc::new(runtime);
+        let sessions = SessionStore::new(settings.max_context_chars);
+        let stats = Arc::new(Stats::default());
+        let predictions = Arc::new(PredictionCoordinator::new(
+            runtime.clone(),
+            sessions.clone(),
+            stats.clone(),
+            settings.prediction_mode,
+            settings.prediction_max_candidates,
+            settings.prediction_max_tokens,
+            settings.prediction_timeout_ms,
+        ));
         Self {
-            sessions: SessionStore::new(settings.max_context_chars),
+            sessions,
             settings,
-            runtime: Arc::new(runtime),
-            stats: Arc::new(Stats::default()),
+            runtime,
+            predictions,
+            stats,
         }
     }
 }
@@ -115,6 +189,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/candidates", post(candidates))
+        .route("/predict", post(predict))
         .route("/commit", post(commit))
         .route("/reset", post(reset))
         .route("/stats", get(stats))
@@ -154,7 +229,7 @@ async fn candidates(
     }
 
     let context = state.sessions.context(request.session_id.trim()).await;
-    state.stats.model_requests.fetch_add(1, Ordering::Relaxed);
+    state.stats.record_model_request();
     match timeout(
         Duration::from_millis(state.settings.max_wait_ms),
         state.runtime.candidates(&context, &input, max_candidates),
@@ -162,7 +237,7 @@ async fn candidates(
     .await
     {
         Ok(Ok(candidates)) if !candidates.is_empty() => {
-            state.stats.model_successes.fetch_add(1, Ordering::Relaxed);
+            state.stats.record_model_success();
             Json(CandidatesResponse {
                 status: "ready".to_string(),
                 candidates,
@@ -171,18 +246,72 @@ async fn candidates(
             })
         }
         Ok(Ok(_)) => {
-            state.stats.fallbacks.fetch_add(1, Ordering::Relaxed);
+            state.stats.record_fallback();
             Json(fallback_response(started, "no_match"))
         }
         Ok(Err(error)) => {
-            state.stats.fallbacks.fetch_add(1, Ordering::Relaxed);
+            state.stats.record_fallback();
             tracing::debug!(error = %error, "model candidate request failed");
             Json(fallback_response(started, "model_error"))
         }
         Err(_) => {
-            state.stats.timeouts.fetch_add(1, Ordering::Relaxed);
-            state.stats.fallbacks.fetch_add(1, Ordering::Relaxed);
+            state.stats.record_timeout();
+            state.stats.record_fallback();
             Json(fallback_response(started, "timeout"))
+        }
+    }
+}
+
+async fn predict(
+    State(state): State<AppState>,
+    Json(request): Json<PredictionRequest>,
+) -> Json<PredictionResponse> {
+    state.stats.record_prediction_request();
+    let started = std::time::Instant::now();
+    let session_id = request.session_id.trim();
+    let max_candidates = request
+        .max_candidates
+        .unwrap_or(state.settings.prediction_max_candidates)
+        .clamp(1, state.settings.prediction_max_candidates);
+    let max_tokens = request
+        .max_tokens
+        .unwrap_or(state.settings.prediction_max_tokens)
+        .clamp(1, state.settings.prediction_max_tokens);
+    if session_id.is_empty() {
+        state.stats.record_fallback();
+        return Json(prediction_fallback_response(
+            started,
+            request.revision,
+            "invalid_request",
+        ));
+    }
+
+    let revision = state.sessions.revision(session_id).await;
+    if revision != request.revision {
+        state.stats.record_prediction_stale();
+        return Json(prediction_stale_response(started, revision));
+    }
+
+    let context = state.sessions.context(session_id).await;
+    let request = PredictionRequest {
+        session_id: request.session_id,
+        revision: request.revision,
+        mode: request.mode,
+        max_candidates: Some(max_candidates),
+        max_tokens: Some(max_tokens),
+    };
+    let receiver = state.predictions.submit(request, context).await;
+    match timeout(
+        Duration::from_millis(state.settings.prediction_timeout_ms),
+        receiver,
+    )
+    .await
+    {
+        Ok(Ok(response)) => Json(response),
+        Ok(Err(_)) | Err(_) => {
+            state.stats.record_timeout();
+            state.stats.record_fallback();
+            Json(prediction_fallback_response(started, revision, "timeout"))
         }
     }
 }
@@ -192,22 +321,26 @@ async fn commit(
     Json(request): Json<CommitRequest>,
 ) -> Json<serde_json::Value> {
     if !request.session_id.trim().is_empty() && !request.text.is_empty() {
-        state
+        let revision = state
             .sessions
             .commit(request.session_id.trim(), &request.text)
             .await;
         state.stats.commits.fetch_add(1, Ordering::Relaxed);
+        return Json(serde_json::json!({"status": "ok", "revision": revision}));
     }
-    Json(serde_json::json!({"status": "ok"}))
+    Json(serde_json::json!({
+        "status": "ok",
+        "revision": state.sessions.revision(request.session_id.trim()).await
+    }))
 }
 
 async fn reset(
     State(state): State<AppState>,
     Json(request): Json<ResetRequest>,
 ) -> Json<serde_json::Value> {
-    state.sessions.reset(request.session_id.trim()).await;
+    let revision = state.sessions.reset(request.session_id.trim()).await;
     state.stats.resets.fetch_add(1, Ordering::Relaxed);
-    Json(serde_json::json!({"status": "ok"}))
+    Json(serde_json::json!({"status": "ok", "revision": revision}))
 }
 
 fn fallback_response(started: std::time::Instant, source: &str) -> CandidatesResponse {
@@ -215,6 +348,30 @@ fn fallback_response(started: std::time::Instant, source: &str) -> CandidatesRes
         status: "fallback".to_string(),
         candidates: Vec::new(),
         source: source.to_string(),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+fn prediction_fallback_response(
+    started: std::time::Instant,
+    revision: u64,
+    source: &str,
+) -> PredictionResponse {
+    PredictionResponse {
+        status: "fallback".to_string(),
+        revision,
+        candidates: Vec::new(),
+        source: source.to_string(),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+fn prediction_stale_response(started: std::time::Instant, revision: u64) -> PredictionResponse {
+    PredictionResponse {
+        status: "stale".to_string(),
+        revision,
+        candidates: Vec::new(),
+        source: "stale".to_string(),
         elapsed_ms: started.elapsed().as_millis() as u64,
     }
 }

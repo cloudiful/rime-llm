@@ -13,6 +13,10 @@ context_window = 4096
 max_candidates = 16
 max_wait_ms = 15000
 max_context_chars = 256
+prediction_mode = "free"
+prediction_max_candidates = 5
+prediction_max_tokens = 8
+prediction_timeout_ms = 15000
 download_timeout_secs = 3600
 
 # Bundled rime-ice dictionary. Point this at another Rime dictionary root to customize it.

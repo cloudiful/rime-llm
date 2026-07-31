@@ -24,11 +24,11 @@ pub struct ModelCandidate {
 }
 
 pub struct ModelRuntime {
-    model: Arc<Model>,
-    lexicon: Arc<Lexicon>,
+    pub(crate) model: Arc<Model>,
+    pub(crate) lexicon: Arc<Lexicon>,
     pub device: String,
     pub model_file: String,
-    context_window: usize,
+    pub(crate) context_window: usize,
 }
 
 impl ModelRuntime {
