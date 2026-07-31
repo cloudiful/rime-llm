@@ -15,15 +15,6 @@ fn default_bind_addr() -> SocketAddr {
         .expect("default bind address is valid")
 }
 
-fn default_model_dir() -> PathBuf {
-    let current = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if current.join("rime-llm").is_dir() {
-        current.join("rime-llm").join("models")
-    } else {
-        current.join("models")
-    }
-}
-
 fn default_dictionary_root() -> PathBuf {
     let current = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut candidates = vec![
@@ -111,7 +102,7 @@ impl Default for DevicePreference {
 #[serde(default)]
 pub struct Settings {
     pub bind_addr: SocketAddr,
-    pub model_dir: PathBuf,
+    pub model_dir: Option<PathBuf>,
     pub model_repo: String,
     pub model_file: String,
     pub tokenizer_repo: String,
@@ -132,7 +123,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             bind_addr: default_bind_addr(),
-            model_dir: default_model_dir(),
+            model_dir: None,
             model_repo: default_model_repo(),
             model_file: default_model_file(),
             tokenizer_repo: default_tokenizer_repo(),
@@ -193,18 +184,6 @@ impl Settings {
         settings.normalize_and_validate()
     }
 
-    pub fn model_path(&self) -> PathBuf {
-        self.model_dir.join(&self.model_file)
-    }
-
-    pub fn model_url(&self) -> String {
-        format!(
-            "https://huggingface.co/{}/resolve/main/{}?download=true",
-            self.model_repo.trim_matches('/'),
-            self.model_file
-        )
-    }
-
     fn apply_environment(&mut self) -> Result<(), ConfigError> {
         if let Some(value) = env::var_os("RIME_LLM_BIND_ADDR") {
             self.bind_addr = value.to_string_lossy().parse().map_err(|_| {
@@ -212,7 +191,7 @@ impl Settings {
             })?;
         }
         if let Some(value) = env::var_os("RIME_LLM_MODEL_DIR") {
-            self.model_dir = PathBuf::from(value);
+            self.model_dir = Some(PathBuf::from(value));
         }
         if let Some(value) = env::var_os("RIME_LLM_MODEL_REPO") {
             self.model_repo = value.to_string_lossy().into_owned();
@@ -282,7 +261,7 @@ impl Settings {
         }
         if self.model_file.contains('/') || self.model_file.contains("..") {
             return Err(ConfigError::Invalid(
-                "model_file must be a file name inside model_dir".to_string(),
+                "model_file must be a relative file name (no '/' or '..')".to_string(),
             ));
         }
         if self.context_window < 128 {
@@ -365,14 +344,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_model_url_is_stable() {
-        let settings = Settings::default();
-        assert!(settings.model_url().contains("unsloth/Qwen3-0.6B-GGUF"));
-        assert!(settings.model_url().contains("Qwen3-0.6B-Q4_K_M.gguf"));
-    }
-
-    #[test]
-    fn model_file_cannot_escape_model_dir() {
+    fn model_file_must_be_a_simple_filename() {
         let settings = Settings {
             model_file: "../model.gguf".into(),
             ..Settings::default()

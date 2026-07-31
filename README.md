@@ -13,8 +13,10 @@ cp config.example.toml config.toml
 cargo run --features metal
 ```
 
-The first start downloads the model into `models/`. Use `device = "cpu"` when
-Metal is unavailable. The service listens on `127.0.0.1:32123` by default.
+The first start downloads the model through `hf-hub` into the Hugging Face
+global cache (`~/.cache/huggingface`). Set `HF_ENDPOINT` to use a mirror, or
+`model_dir` to override the cache location. Use `device = "cpu"` when Metal is
+unavailable. The service listens on `127.0.0.1:32123` by default.
 
 ## Use with Squirrel
 

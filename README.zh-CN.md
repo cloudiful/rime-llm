@@ -12,7 +12,9 @@ cp config.example.toml config.toml
 cargo run --features metal
 ```
 
-首次启动会把模型下载到 `models/`。没有 Metal 时将 `device = "cpu"` 写入配置。
+首次启动会通过 `hf-hub` 把模型下载到 Hugging Face 全局缓存
+（`~/.cache/huggingface`）。设置 `HF_ENDPOINT` 可切换镜像，设置 `model_dir`
+可覆盖缓存位置。没有 Metal 时将 `device = "cpu"` 写入配置。
 服务默认监听 `127.0.0.1:32123`。
 
 ## 在鼠须管中使用

@@ -1,17 +1,15 @@
-use std::{
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::path::{Path, PathBuf};
 
-use tokio::{fs, io::AsyncReadExt, io::AsyncWriteExt, time::timeout};
-use tracing::info;
+use hf_hub::api::tokio::{ApiBuilder, ApiError};
+use tokio::{fs, io::AsyncReadExt, time::timeout};
+use tracing::{info, warn};
 
 use crate::config::Settings;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadError {
     #[error("model download failed: {0}")]
-    Request(#[from] reqwest::Error),
+    HfHub(#[from] ApiError),
     #[error("model file I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("model download timed out")]
@@ -21,62 +19,63 @@ pub enum DownloadError {
 }
 
 pub async fn ensure_model(settings: &Settings) -> Result<PathBuf, DownloadError> {
-    let path = settings.model_path();
-    if is_valid_gguf(&path).await? {
-        info!(path = %path.display(), "using cached GGUF model");
-        return Ok(path);
+    let mut builder = ApiBuilder::from_env().with_progress(false);
+    if let Some(cache_dir) = &settings.model_dir {
+        builder = builder.with_cache_dir(cache_dir.clone());
     }
+    let api = builder.build()?;
 
-    fs::create_dir_all(&settings.model_dir).await?;
-    let temporary_path = temporary_path(&path);
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .build()?;
-    info!(url = %settings.model_url(), "downloading GGUF model");
-    let download = async {
-        let mut response = client.get(settings.model_url()).send().await?;
-        response = response.error_for_status()?;
-        let mut file = fs::File::create(&temporary_path).await?;
-        while let Some(chunk) = response.chunk().await? {
-            file.write_all(&chunk).await?;
-        }
-        file.flush().await?;
-        file.sync_all().await?;
-        Ok::<(), DownloadError>(())
+    info!(
+        repo = %settings.model_repo,
+        file = %settings.model_file,
+        "resolving GGUF model via hf-hub"
+    );
+    let resolve = async {
+        api.model(settings.model_repo.clone())
+            .get(&settings.model_file)
+            .await
     };
 
-    let download_result = timeout(
-        Duration::from_secs(settings.download_timeout_secs),
-        download,
+    let path = match timeout(
+        std::time::Duration::from_secs(settings.download_timeout_secs),
+        resolve,
     )
-    .await;
-    match download_result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            let _ = fs::remove_file(&temporary_path).await;
-            return Err(error);
-        }
-        Err(_) => {
-            let _ = fs::remove_file(&temporary_path).await;
-            return Err(DownloadError::Timeout);
-        }
-    }
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => return Err(DownloadError::Timeout),
+    };
 
-    if !is_valid_gguf(&temporary_path).await? {
-        let _ = fs::remove_file(&temporary_path).await;
-        return Err(DownloadError::InvalidGguf);
+    if !is_valid_gguf(&path).await? {
+        warn!(path = %path.display(), "cached GGUF is corrupt, removing and retrying");
+        if let Ok(target) = fs::read_link(&path).await {
+            let resolved = path.parent().map(|p| p.join(&target)).unwrap_or_else(|| target);
+            let _ = fs::remove_file(resolved).await;
+        }
+        fs::remove_file(&path).await?;
+
+        let retry = async {
+            api.model(settings.model_repo.clone())
+                .get(&settings.model_file)
+                .await
+        };
+        let path = match timeout(
+            std::time::Duration::from_secs(settings.download_timeout_secs),
+            retry,
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => return Err(DownloadError::Timeout),
+        };
+        if !is_valid_gguf(&path).await? {
+            return Err(DownloadError::InvalidGguf);
+        }
+        info!(path = %path.display(), "GGUF model ready after retry");
+        return Ok(path);
     }
-    fs::rename(&temporary_path, &path).await?;
-    info!(path = %path.display(), "GGUF model download complete");
+    info!(path = %path.display(), "GGUF model ready");
     Ok(path)
-}
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    path.with_extension(format!("gguf.part.{}.{}", std::process::id(), suffix))
 }
 
 async fn is_valid_gguf(path: &Path) -> Result<bool, std::io::Error> {

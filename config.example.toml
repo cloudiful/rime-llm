@@ -1,8 +1,10 @@
 # The service only listens on loopback by default.
 bind_addr = "127.0.0.1:32123"
 
-# Model weights are downloaded here on first startup.
-model_dir = "./models"
+# Model weights are fetched via hf-hub and cached under the Hugging Face
+# global cache (~/.cache/huggingface) by default. Set HF_ENDPOINT to use a
+# mirror. Uncomment model_dir to override the cache location.
+# model_dir = "./models"
 model_repo = "unsloth/Qwen3-0.6B-GGUF"
 model_file = "Qwen3-0.6B-Q4_K_M.gguf"
 tokenizer_repo = "Qwen/Qwen3-0.6B"

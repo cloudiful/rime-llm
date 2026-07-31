@@ -162,13 +162,15 @@ async fn build_model(
     let model_dir = model_path
         .parent()
         .context("model path has no parent directory")?;
-    let builder = GgufModelBuilder::new(
-        model_dir.to_string_lossy(),
-        vec![settings.model_file.clone()],
-    )
-    .with_tok_model_id(settings.tokenizer_repo.clone())
-    .with_max_num_seqs(1)
-    .with_prefix_cache_n(None);
+    let model_file = model_path
+        .file_name()
+        .context("model path has no file name")?
+        .to_string_lossy()
+        .into_owned();
+    let builder = GgufModelBuilder::new(model_dir.to_string_lossy(), vec![model_file])
+        .with_tok_model_id(settings.tokenizer_repo.clone())
+        .with_max_num_seqs(1)
+        .with_prefix_cache_n(None);
     let builder = if force_cpu {
         builder.with_force_cpu()
     } else {
