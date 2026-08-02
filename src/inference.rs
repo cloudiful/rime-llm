@@ -1,111 +1,165 @@
+use std::num::NonZeroU32;
+
 use anyhow::{Context, Result};
-use either::Either;
-use mistralrs::{
-    Constraint, DType, Device, Model, NormalRequest, Request, RequestMessage, ResponseOk,
-    SamplingParams, TextMessageRole, TextMessages,
+use encoding_rs::UTF_8;
+use llama_cpp_2::{
+    context::params::LlamaContextParams,
+    llama_backend::LlamaBackend,
+    llama_batch::LlamaBatch,
+    model::{AddBos, LlamaModel},
+    sampling::LlamaSampler,
+    token::LlamaToken,
 };
-use tokio::sync::mpsc::channel;
 
-/// Tokenize the same chat prompt that is used for generation, without enabling
-/// Qwen's thinking mode. Candidate text is appended after this prompt.
-pub async fn tokenize_prompt(model: &Model, prompt: &str) -> Result<Vec<u32>> {
-    let messages = TextMessages::new().add_message(TextMessageRole::User, prompt);
+pub(crate) fn tokenize(model: &LlamaModel, text: &str, add_bos: AddBos) -> Result<Vec<u32>> {
     model
-        .tokenize(Either::Left(messages), None, false, true, Some(false))
-        .await
-        .context("tokenize chat prompt")
+        .str_to_token(text, add_bos)
+        .context("tokenize text")?
+        .into_iter()
+        .map(|token| u32::try_from(token.0).context("llama.cpp returned a negative token id"))
+        .collect()
 }
 
-pub async fn tokenize_candidate(model: &Model, text: &str) -> Result<Vec<u32>> {
-    model
-        .tokenize(
-            Either::Right(text.to_string()),
-            None,
-            false,
-            false,
-            Some(false),
-        )
-        .await
-        .context("tokenize dictionary candidate")
-}
-
-/// Run one prompt or prompt-plus-candidate sequence and return logits for each
-/// input position. Row `n - 1` predicts the token after input token `n - 1`.
-pub async fn raw_logits_for_tokens(model: &Model, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+pub(crate) fn logits_at_positions(
+    model: &LlamaModel,
+    backend: &LlamaBackend,
+    context_window: usize,
+    tokens: &[u32],
+    positions: &[usize],
+) -> Result<Vec<Vec<f32>>> {
     if tokens.is_empty() {
         anyhow::bail!("cannot request logits for an empty token sequence");
     }
-
-    let (tx, mut rx) = channel(1);
-    let request = Request::Normal(Box::new(NormalRequest {
-        messages: RequestMessage::CompletionTokens(tokens.to_vec()),
-        sampling_params: SamplingParams {
-            // mistral.rs rejects zero even though this request only needs
-            // prompt logits and does not consume a generated token.
-            max_len: Some(1),
-            ..SamplingParams::deterministic()
-        },
-        response: tx,
-        return_logprobs: false,
-        is_streaming: false,
-        id: 0,
-        constraint: Constraint::None,
-        suffix: None,
-        tools: None,
-        tool_choice: None,
-        logits_processors: None,
-        return_raw_logits: true,
-        web_search_options: None,
-        enable_code_execution: false,
-        enable_shell: false,
-        shell_options: None,
-        code_execution_permission: None,
-        code_execution_approval_notifier: None,
-        agent_permission: None,
-        agent_approval_handler: None,
-        agent_approval_notifier: None,
-        max_tool_rounds: None,
-        tool_dispatch_url: None,
-        model_id: None,
-        adapter: None,
-        truncate_sequence: false,
-        session_id: None,
-        files: None,
-        input_files: Vec::new(),
-    }));
-    model.inner().get_sender(None)?.send(request).await?;
-
-    let response = rx
-        .recv()
-        .await
-        .context("raw logits response channel closed")?
-        .as_result()?;
-    let ResponseOk::Raw {
-        logits_chunks,
-        tokens: returned_tokens,
-    } = response
-    else {
-        anyhow::bail!("model returned a non-raw response");
-    };
-    if returned_tokens != tokens {
-        anyhow::bail!("model returned a token sequence different from the request");
+    if positions.is_empty() {
+        return Ok(Vec::new());
     }
-    let tensor = logits_chunks
-        .into_iter()
-        .next()
-        .context("model returned no logits")?
-        .to_device(&Device::Cpu)?
-        .to_dtype(DType::F32)?;
-    match tensor.dims() {
-        [_rows, _vocab] => tensor.to_vec2::<f32>().map_err(Into::into),
-        [_vocab] => Ok(vec![tensor.to_vec1::<f32>()?]),
-        dimensions => anyhow::bail!("unexpected logits shape: {dimensions:?}"),
+    if tokens.len() > context_window {
+        anyhow::bail!(
+            "token sequence has {} tokens, exceeding context window {}",
+            tokens.len(),
+            context_window
+        );
     }
+    if positions.iter().any(|position| *position >= tokens.len()) {
+        anyhow::bail!("requested logit position is outside the token sequence");
+    }
+
+    let mut context = new_context(model, backend, context_window)?;
+    let mut batch = LlamaBatch::new(tokens.len(), 1);
+    for (position, token) in tokens.iter().enumerate() {
+        batch.add(
+            llama_token(*token)?,
+            i32::try_from(position).context("token position exceeds llama.cpp range")?,
+            &[0],
+            positions.contains(&position),
+        )?;
+    }
+    context.decode(&mut batch).context("decode logits batch")?;
+
+    positions
+        .iter()
+        .map(|position| {
+            Ok(context
+                .get_logits_ith(i32::try_from(*position).context("logit index overflow")?)
+                .to_vec())
+        })
+        .collect()
 }
 
-pub fn append_candidate(prompt_tokens: &[u32], candidate_tokens: &[u32]) -> Vec<u32> {
-    let mut tokens = Vec::with_capacity(prompt_tokens.len() + candidate_tokens.len());
-    tokens.extend_from_slice(prompt_tokens);
-    tokens.extend_from_slice(candidate_tokens);
-    tokens
+pub(crate) fn generate(
+    model: &LlamaModel,
+    backend: &LlamaBackend,
+    context_window: usize,
+    prompt_tokens: &[u32],
+    max_tokens: usize,
+) -> Result<String> {
+    if prompt_tokens.is_empty() {
+        anyhow::bail!("cannot generate from an empty prompt");
+    }
+    if prompt_tokens.len() >= context_window {
+        anyhow::bail!("prompt leaves no room for generated tokens");
+    }
+    if max_tokens == 0 {
+        return Ok(String::new());
+    }
+
+    let mut context = new_context(model, backend, context_window)?;
+    let mut prompt_batch = LlamaBatch::new(prompt_tokens.len(), 1);
+    prompt_batch.add_sequence(
+        &prompt_tokens
+            .iter()
+            .copied()
+            .map(llama_token)
+            .collect::<Result<Vec<_>>>()?,
+        0,
+        false,
+    )?;
+    context
+        .decode(&mut prompt_batch)
+        .context("decode generation prompt")?;
+
+    let mut sampler = LlamaSampler::greedy();
+    let mut next = sampler.sample(
+        &context,
+        i32::try_from(prompt_tokens.len() - 1).context("prompt index exceeds llama.cpp range")?,
+    );
+    sampler.accept(next);
+
+    let mut decoder = UTF_8.new_decoder();
+    let mut output = String::new();
+    for generated_index in 0..max_tokens {
+        if model.is_eog_token(next) {
+            break;
+        }
+        output.push_str(
+            &model
+                .token_to_piece(next, &mut decoder, false, None)
+                .context("decode generated token")?,
+        );
+
+        if generated_index + 1 == max_tokens
+            || prompt_tokens.len() + generated_index + 1 >= context_window
+        {
+            break;
+        }
+
+        let mut batch = LlamaBatch::new(1, 1);
+        batch.add(
+            next,
+            i32::try_from(prompt_tokens.len() + generated_index)
+                .context("generation position exceeds llama.cpp range")?,
+            &[0],
+            true,
+        )?;
+        context
+            .decode(&mut batch)
+            .context("decode generated token")?;
+        next = sampler.sample(&context, 0);
+        sampler.accept(next);
+    }
+
+    Ok(output)
+}
+
+fn new_context<'a>(
+    model: &'a LlamaModel,
+    backend: &LlamaBackend,
+    context_window: usize,
+) -> Result<llama_cpp_2::context::LlamaContext<'a>> {
+    let context_window = u32::try_from(context_window).context("context window exceeds u32")?;
+    let context_window = NonZeroU32::new(context_window).context("context window is zero")?;
+    let n_ubatch = context_window.get().min(512);
+    let params = LlamaContextParams::default()
+        .with_n_ctx(Some(context_window))
+        .with_n_batch(context_window.get())
+        .with_n_ubatch(n_ubatch);
+    model
+        .new_context(backend, params)
+        .context("create llama.cpp context")
+}
+
+fn llama_token(token: u32) -> Result<LlamaToken> {
+    Ok(LlamaToken::new(
+        i32::try_from(token).context("token id exceeds llama.cpp range")?,
+    ))
 }

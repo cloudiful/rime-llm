@@ -1,7 +1,0 @@
-recipe:
-  Rx: rime-llm
-
-# Plum installs the independent schema only. The native dylib is installed
-# into Squirrel's bundled librime plugin directory by the native build step.
-install_files:
-  - rime_ice_llm.schema.yaml

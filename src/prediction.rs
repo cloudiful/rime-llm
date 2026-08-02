@@ -1,28 +1,10 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
-use mistralrs::{RequestBuilder, TextMessageRole, TextMessages};
+pub use model_protocol::{PredictionCandidate, PredictionMode};
 use serde::{Deserialize, Serialize};
 
 use crate::model::ModelRuntime;
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum PredictionMode {
-    #[default]
-    Free,
-    Dictionary,
-    Hybrid,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PredictionCandidate {
-    pub id: String,
-    pub text: String,
-    pub score: f32,
-    #[serde(rename = "type")]
-    pub kind: String,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PredictionResult {
@@ -44,23 +26,12 @@ impl ModelRuntime {
             PredictionMode::Free | PredictionMode::Hybrid => {
                 let max_tokens = max_tokens.clamp(1, 32);
                 let prompt = build_prediction_prompt(context, self.context_window);
-                let request = RequestBuilder::from(
-                    TextMessages::new().add_message(TextMessageRole::User, prompt),
-                )
-                .enable_thinking(false)
-                .set_sampler_max_len(max_tokens)
-                .set_sampler_n_choices(1);
-                let response = self
-                    .model
-                    .send_chat_request(request)
+                let output = self
+                    .inference
+                    .generate(prompt, max_tokens)
                     .await
-                    .context("generate next-word predictions")?;
-                response
-                    .choices
-                    .into_iter()
-                    .filter_map(|choice| choice.message.content)
-                    .flat_map(|content| parse_generated_candidates(&content, max_candidates))
-                    .collect::<Vec<_>>()
+                    .context("prediction inference task failed")?;
+                parse_generated_candidates(&output, max_candidates)
             }
         };
 
@@ -129,7 +100,10 @@ fn build_prediction_prompt(context: &[String], context_window: usize) -> String 
     }
 }
 
-fn parse_generated_candidates(output: &str, max_candidates: usize) -> Vec<PredictionCandidate> {
+pub(crate) fn parse_generated_candidates(
+    output: &str,
+    max_candidates: usize,
+) -> Vec<PredictionCandidate> {
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     for line in output.lines() {

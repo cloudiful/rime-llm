@@ -7,7 +7,7 @@ bind_addr = "127.0.0.1:32123"
 # model_dir = "./models"
 model_repo = "unsloth/Qwen3-0.6B-GGUF"
 model_file = "Qwen3-0.6B-Q4_K_M.gguf"
-tokenizer_repo = "Qwen/Qwen3-0.6B"
+# The tokenizer and chat template are read from the GGUF model itself.
 
 # Use "cpu" to disable Metal explicitly.
 device = "metal"

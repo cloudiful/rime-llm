@@ -13,9 +13,15 @@ readonly ARCHIVE="rime-llm-${version}-macos-arm64.tar.gz"
 rm -rf package "${OUTPUT_DIR}"
 mkdir -p package "${OUTPUT_DIR}"
 cp "target/${TARGET}/release/rime-llm" package/rime-llm
-cp package-native/librime-llm-predict.dylib package/librime-llm-predict.dylib
+cp "target/${TARGET}/release/ime-daemon" package/ime-daemon
+cp config.example.toml package/config.example.toml
+mkdir -p package/data
+cp -R data/rime-ice package/data/rime-ice
+if [[ -d "build/ime/RimeLLMInputMethod.app" ]]; then
+  cp -R "build/ime/RimeLLMInputMethod.app" package/RimeLLMInputMethod.app
+fi
 test -x package/rime-llm
-test -x package/librime-llm-predict.dylib
+test -x package/ime-daemon
 tar -czf "${OUTPUT_DIR}/${ARCHIVE}" -C package .
 (
   cd "${OUTPUT_DIR}"

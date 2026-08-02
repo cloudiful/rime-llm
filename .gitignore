@@ -2,4 +2,7 @@
 /Cargo.lock
 /config.toml
 /models/
-/native/build/
+/build/
+DerivedData/
+package-output/
+package/

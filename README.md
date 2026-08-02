@@ -1,65 +1,65 @@
 # rime-llm
 
-[Chinese](README.zh-CN.md)
+[简体中文](README.zh-CN.md)
 
-`rime-llm` is a local candidate-reranking and next-word prediction service for
-Rime. It uses Qwen3-0.6B-Q4_K_M through `mistral.rs` and keeps committed context
-in memory. The model-ranked result is shown in the active candidate menu when
-the service responds; ordinary Rime candidates are used as the fallback.
+`rime-llm` is a self-contained pinyin input method for macOS with a local
+LLM service. Dictionary candidates appear immediately as you type; the local
+model (Qwen3-0.6B via llama.cpp) reranks them asynchronously and suggests the
+next word after a commit. It does not depend on Squirrel or librime, and the
+input method keeps working with dictionary candidates when the model service
+is unavailable.
 
-## Run the service
+## Features
+
+- Pinyin input with instant dictionary candidates and async model reranking.
+- Next-word prediction after Chinese text is committed.
+- Local model service (Metal on Apple Silicon, CPU on Windows) on `127.0.0.1`.
+- Bundled rime-ice dictionary; user frequency is saved locally.
+
+## Install
+
+1. Install `RimeLLMInputMethod.app` from the release archive into
+   `~/Library/Input Methods`, then enable **Rime LLM** in
+   System Settings → Keyboard → Text Input. The input method starts its own
+   `ime-daemon` process automatically.
+2. Start the model service (below) for candidate reranking and prediction.
+   Without it, the input method still offers dictionary candidates.
+
+## Deploy the model service
+
+Create a local configuration:
 
 ```bash
 cp config.example.toml config.toml
+```
+
+On macOS Apple Silicon:
+
+```bash
 cargo run --features metal
 ```
 
-The first start downloads the model through `hf-hub` into the Hugging Face
-global cache (`~/.cache/huggingface`). Set `HF_ENDPOINT` to use a mirror, or
-`model_dir` to override the cache location. Use `device = "cpu"` when Metal is
-unavailable. The service listens on `127.0.0.1:32123` by default.
+On Windows or CPU-only systems:
 
-## Use with Squirrel
+```bash
+cargo run --no-default-features
+```
 
-The experimental `rime_ice_llm` schema is included in this repository. Plum
-can install the schema with the root `recipe.yaml`; it does not modify
-`default.custom.yaml` or other personal configuration.
+The Rust build requires CMake, a C++ compiler, and clang/libclang because the
+llama.cpp bindings are generated during compilation. On macOS Apple Silicon,
+the `metal` feature enables GPU offload; set `device = "cpu"` in
+`config.toml` when Metal is unavailable. Windows releases use the CPU
+backend. The first start downloads the model into the Hugging Face cache;
+set `HF_ENDPOINT` to use a mirror. The default service address is
+`127.0.0.1:32123`.
 
-The native plugin is currently macOS Apple Silicon only and must be built
-against the librime 1.16 dylib shipped by Squirrel. Follow
-[`docs/native-plugin.md`](docs/native-plugin.md) to build and copy
-`librime-llm-predict.dylib` into Squirrel's bundled `rime-plugins` directory.
-Then redeploy Rime and select `雾凇拼音（本地模型）` (`rime_ice_llm`).
+## Build the input method
 
-Tagged GitHub releases provide a macOS arm64 archive containing the service and
-native plugin, plus a Windows x64 CPU service archive. The model is downloaded
-on first start and is not included in release archives.
+```bash
+scripts/build-macos-ime.sh
+```
 
-The old Lua translator remains in the Rime configuration as a fallback, but
-the default schema no longer loads it. When the service or plugin is
-unavailable, ordinary Rime input continues to work.
-
-## Prediction behavior
-
-While entering ordinary pinyin, the native translator requests `/candidates`
-for the current input and waits up to 1500 ms so Squirrel can display the
-model-ranked menu in the same key update. If the service is unavailable or
-exceeds the wait budget, ordinary Rime dictionary candidates are used. After a
-Chinese commit, the worker waits 200 ms, sends one `/predict` request, and
-displays up to five candidates in the background.
-
-Modes are `free` (default), `dictionary`, and `hybrid`. Configure them in the
-`prediction` block of the schema or in
-`rime_ice_llm.custom.yaml.example`. `Tab`, `Enter`, and `1-9` accept a
-prediction. `Space` always commits a literal space, and `Esc` closes the
-prediction. Set `prediction.trigger` to prefetch without automatic popup.
-
-The service exposes `GET /healthz`, `POST /candidates`, `POST /predict`,
-`POST /commit`, `POST /reset`, and `GET /stats`.
-
-The bundled dictionary is a snapshot of [rime-ice](https://github.com/iDvel/rime-ice)
-and is separately licensed GPL-3.0-only. Keep
-[`data/rime-ice/LICENSE`](data/rime-ice/LICENSE) and
-[`data/rime-ice/SOURCE.md`](data/rime-ice/SOURCE.md) when redistributing it.
-Update dictionary files only with `scripts/update-rime-ice.sh`. The
-application code is Apache-2.0.
+The script builds `ime-daemon`, compiles `RimeLLMInputMethod.app` with
+`xcodebuild`, embeds the daemon and dictionary, and ad-hoc signs the bundle.
+See [`docs/ime-daemon.md`](docs/ime-daemon.md) for daemon configuration and
+[`docs/ime-protocol.md`](docs/ime-protocol.md) for the input method protocol.

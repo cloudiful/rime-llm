@@ -1,0 +1,122 @@
+# ime-daemon protocol
+
+`ime-daemon` is a localhost HTTP/WebSocket service that owns the input
+composition state for the input method frontend (`RimeLLMInputMethod.app`).
+It binds to `127.0.0.1:32124` by default and talks to the model service
+(`http://127.0.0.1:32123`) on the frontend's behalf.
+
+All request and response bodies are JSON with `snake_case` fields. Every
+response includes a `state` snapshot so the frontend never needs to issue a
+separate GET after a key event.
+
+## Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/healthz` | Liveness probe used by the input method on startup. |
+| POST | `/v1/sessions` | Create a session; returns `{session_id, state}`. |
+| GET | `/v1/sessions/{id}/state` | Current `state`. |
+| DELETE | `/v1/sessions/{id}` | Close a session and schedule model-context reset. |
+| POST | `/v1/sessions/{id}/key` | Send an input event; returns `{session_id, state, effects}`. |
+| POST | `/v1/sessions/{id}/commit-ack` | Record committed text `{text}`; returns `{ok, revision}`. |
+| GET | `/v1/sessions/{id}/events` | WebSocket stream of `state` snapshots. |
+
+## Key events
+
+`POST /v1/sessions/{id}/key` body:
+
+```json
+{"event": "letter", "value": "b"}
+```
+
+Supported events:
+
+| event | value | meaning |
+| --- | --- | --- |
+| `letter` | single ASCII letter | insert into the composition |
+| `backspace` | – | delete before the cursor |
+| `delete` | – | delete after the cursor |
+| `left` / `right` | – | move the composition cursor |
+| `pageup` / `pagedown` | – | flip the candidate page |
+| `space` | – | commit the first candidate of the page |
+| `enter` | – | commit the selected candidate (or raw input when empty) |
+| `escape` | – | clear the composition |
+| `digit` | `1`–`9` | commit the n-th candidate of the page |
+| `select` | index | commit the candidate at the absolute index |
+
+The response `effects` field is optional:
+
+```json
+{"effects": {"commit": "不如", "clear": true}}
+```
+
+- `commit` — the frontend must insert this text into the client document.
+- `clear` — the composition ended; the frontend clears marked text and
+  candidates. A `commit` with `clear` is a full commit; `commit` alone means
+  the remaining pinyin keeps composing.
+
+`DELETE /v1/sessions/{id}` removes the local session immediately and starts an
+idempotent `POST /reset` request to the model service. Its response is:
+
+```json
+{"ok": true, "model_reset": true, "reset_retry_scheduled": false}
+```
+
+When the model service is unavailable, `model_reset` is `false` and the daemon
+performs bounded background retries; local session removal still succeeds.
+
+## State snapshot
+
+```json
+{
+  "composition": {"input": "buru", "cursor": 4, "preedit_cursor": 5},
+  "preedit": "bu ru",
+  "candidates": [{
+    "id": "d:不如", "text": "不如", "preedit": "bu ru",
+    "consumedkeys": 4, "base_score": 1.96, "kind": "dictionary"
+  }],
+  "selected_index": 0,
+  "page": 0,
+  "page_size": 9,
+  "predictions": [{"id": "p:1", "text": "人意", "score": -1.2, "type": "prediction"}],
+  "model_pending": true,
+  "revision": 4,
+  "event_seq": 6
+}
+```
+
+- `composition.input` — the raw pinyin buffer; `cursor` is the edit position.
+- `composition.preedit_cursor` — the cursor position in the display preedit,
+  including inserted spaces. Frontends should use this value for marked-text
+  selection ranges instead of the raw `cursor`.
+- `preedit` — display string with spaces between syllables.
+- `candidates` — the full candidate list (page window is `page_size` = 9);
+  candidate `id` is stable across refreshes (`d:` + text) so the frontend can
+  preserve the selection when the model reranks.
+- `predictions` — model next-word suggestions shown only when the composition
+  is empty. Prediction candidates use the model-service-compatible `type`
+  field.
+- `model_pending` — a model request is in flight.
+- `revision` — bumped on every input change; model responses carry the
+  revision they were requested with and are dropped if it changed.
+- `event_seq` — monotonically increasing per session; the frontend uses it to
+  ignore stale WebSocket snapshots.
+
+## Refresh rules
+
+- A key request updates only local state and dictionary candidates and
+  returns immediately.
+- The daemon reranks asynchronously with the model service and pushes the new
+  state over WebSocket when the composition revision is unchanged. Stale
+  responses never overwrite newer input.
+- After `commit-ack` with an empty composition, the daemon requests next-word
+  predictions and pushes them over WebSocket. The committed text is recorded
+  into the local user-frequency file (atomic write, never uploaded) and sent
+  to the model service to update its context.
+
+## Model service contract (unchanged)
+
+`rime-llm` keeps serving `GET /healthz`, `POST /candidates`, `POST /predict`,
+`POST /commit`, `POST /reset`, and `GET /stats`. `POST /candidates` still
+receives candidate paths, but the paths are now generated by `ime-core`
+(dictionary lattice), not by Rime.

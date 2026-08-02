@@ -1,4 +1,4 @@
-use crate::lexicon::LexiconEntry;
+use pinyin_dict::LexiconEntry;
 
 pub fn score_first_token(token_ids: &[u32], logits: &[f32]) -> Option<f32> {
     let token_id = *token_ids.first()? as usize;
@@ -54,7 +54,7 @@ fn log_probability(logits: &[f32], token_id: usize) -> Option<f32> {
 }
 
 fn prior_score(entry: &LexiconEntry) -> f32 {
-    (entry.prior.max(0.0) + 1.0).ln() * 0.15
+    entry.prior_score()
 }
 
 pub fn rank_entries_by_scores(
@@ -86,7 +86,7 @@ pub struct ScoredPath {
 }
 
 impl ScoredPath {
-    /// Final ranking score combining the native prior and the per-token
+    /// Final ranking score combining the dictionary prior and the per-token
     /// normalized model log-probability.
     pub fn final_score(&self, base_weight: f32) -> f32 {
         let model_weight = 1.0 - base_weight.clamp(0.0, 1.0);
@@ -95,7 +95,7 @@ impl ScoredPath {
 }
 
 /// Dedup, sort and truncate a list of `ScoredPath`s. The first occurrence of a
-/// given `text` wins, preserving native ordering before sorting by score.
+/// given `text` wins, preserving dictionary ordering before sorting by score.
 pub fn rank_paths(
     paths: Vec<ScoredPath>,
     max_candidates: usize,
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_paths_keeps_first_native_occurrence_when_deduping() {
+    fn rank_paths_keeps_first_dictionary_occurrence_when_deduping() {
         let paths = vec![
             path("weak", "苹果", 0.0, -0.1),
             path("strong", "苹果", 10.0, -0.1),
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_paths_keeps_native_order_on_equal_scores() {
+    fn rank_paths_keeps_dictionary_order_on_equal_scores() {
         let paths = vec![
             path("a", "甲", 0.0, -0.1),
             path("b", "乙", 0.0, -0.1),

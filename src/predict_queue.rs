@@ -1,9 +1,6 @@
 use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
-use tokio::{
-    sync::{oneshot, Mutex, Notify},
-    time::timeout,
-};
+use tokio::sync::{oneshot, Mutex, Notify};
 
 use crate::{
     api::{PredictionRequest, PredictionResponse, Stats},
@@ -20,7 +17,6 @@ pub struct PredictionCoordinator {
     default_mode: PredictionMode,
     max_candidates: usize,
     max_tokens: usize,
-    timeout_ms: u64,
     state: Arc<Mutex<State>>,
     wakeup: Arc<Notify>,
 }
@@ -73,7 +69,7 @@ impl PredictionCoordinator {
         default_mode: PredictionMode,
         max_candidates: usize,
         max_tokens: usize,
-        timeout_ms: u64,
+        _timeout_ms: u64,
     ) -> Self {
         Self {
             backend,
@@ -82,7 +78,6 @@ impl PredictionCoordinator {
             default_mode,
             max_candidates: max_candidates.clamp(1, 16),
             max_tokens: max_tokens.clamp(1, 32),
-            timeout_ms,
             state: Arc::new(Mutex::new(State {
                 started: false,
                 pending: None,
@@ -170,14 +165,15 @@ impl PredictionCoordinator {
             .max_tokens
             .unwrap_or(self.max_tokens)
             .clamp(1, self.max_tokens);
-        match timeout(
-            std::time::Duration::from_millis(self.timeout_ms),
-            self.backend
-                .predict(&job.context, mode, max_candidates, max_tokens),
-        )
-        .await
+        // The HTTP handler owns the caller-facing timeout. The coordinator
+        // must keep awaiting the active backend job so a timed-out request
+        // cannot detach a blocking inference task from the single worker.
+        match self
+            .backend
+            .predict(&job.context, mode, max_candidates, max_tokens)
+            .await
         {
-            Ok(Ok(result)) if !result.candidates.is_empty() => {
+            Ok(result) if !result.candidates.is_empty() => {
                 let latest_revision = self.sessions.revision(&job.request.session_id).await;
                 if latest_revision != job.request.revision {
                     self.stats.record_prediction_stale();
@@ -198,7 +194,7 @@ impl PredictionCoordinator {
                     elapsed_ms: job.started.elapsed().as_millis() as u64,
                 });
             }
-            Ok(Ok(_)) => {
+            Ok(_) => {
                 self.stats.record_fallback();
                 let _ = job.responder.send(PredictionResponse {
                     status: "fallback".to_string(),
@@ -208,7 +204,7 @@ impl PredictionCoordinator {
                     elapsed_ms: job.started.elapsed().as_millis() as u64,
                 });
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 tracing::debug!(error = %error, "model prediction request failed");
                 self.stats.record_fallback();
                 let _ = job.responder.send(PredictionResponse {
@@ -216,17 +212,6 @@ impl PredictionCoordinator {
                     revision: job.request.revision,
                     candidates: Vec::new(),
                     source: "model_error".to_string(),
-                    elapsed_ms: job.started.elapsed().as_millis() as u64,
-                });
-            }
-            Err(_) => {
-                self.stats.record_timeout();
-                self.stats.record_fallback();
-                let _ = job.responder.send(PredictionResponse {
-                    status: "fallback".to_string(),
-                    revision: job.request.revision,
-                    candidates: Vec::new(),
-                    source: "timeout".to_string(),
                     elapsed_ms: job.started.elapsed().as_millis() as u64,
                 });
             }
@@ -342,6 +327,46 @@ mod tests {
         backend.release.notify_one();
         let third_response = third.await.expect("latest response should be sent");
         assert_eq!(third_response.status, "ready");
+        assert_eq!(backend.started.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn dropping_timed_out_caller_does_not_detach_active_job() {
+        let backend = Arc::new(FakeBackend {
+            started: AtomicUsize::new(0),
+            entered: Notify::new(),
+            release: Notify::new(),
+        });
+        let sessions = SessionStore::new(20);
+        assert_eq!(sessions.commit("s", "甲").await, 1);
+        let stats = Arc::new(Stats::default());
+        let coordinator = PredictionCoordinator::new(
+            backend.clone(),
+            sessions,
+            stats,
+            PredictionMode::Free,
+            5,
+            8,
+            1,
+        );
+
+        let first = coordinator
+            .submit(request(1, "s"), vec!["甲".to_string()])
+            .await;
+        wait_until_started(&backend, 1).await;
+        drop(first);
+
+        let latest = coordinator
+            .submit(request(1, "s"), vec!["甲".to_string()])
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(backend.started.load(Ordering::SeqCst), 1);
+
+        backend.release.notify_one();
+        wait_until_started(&backend, 2).await;
+        backend.release.notify_one();
+        let response = latest.await.expect("latest response should be sent");
+        assert_eq!(response.status, "ready");
         assert_eq!(backend.started.load(Ordering::SeqCst), 2);
     }
 }

@@ -48,6 +48,26 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install LLVM for llama.cpp
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: choco install llvm --yes --no-progress
+
+      - name: Configure LLVM for llama.cpp
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $llvmBin = 'C:\Program Files\LLVM\bin'
+          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=$llvmBin"
+          Add-Content $env:GITHUB_PATH $llvmBin
+
+      - name: Check llama.cpp build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v clang
+          command -v cmake
+
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
         with:
@@ -66,7 +86,7 @@ jobs:
           SCCACHE_S3_KEY_PREFIX: rust/rime-llm/
         run: cargo test --no-default-features --target "${TARGET}"
 
-      - name: Build native macOS plugin
+      - name: Run Metal Rust tests
         if: matrix.os == 'macos'
         shell: bash
         env:
@@ -78,8 +98,28 @@ jobs:
           SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
           SCCACHE_REGION: auto
           SCCACHE_S3_KEY_PREFIX: rust/rime-llm/
-          CMAKE_CXX_COMPILER_LAUNCHER: sccache
-        run: scripts/build-native-plugin.sh package-native
+        run: cargo test --features metal --target "${TARGET}"
+
+      - name: Build ime-daemon
+        if: matrix.os == 'macos'
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BASEDIRS: ${{ github.workspace }}
+          SCCACHE_BUCKET: sccache
+          SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
+          SCCACHE_REGION: auto
+          SCCACHE_S3_KEY_PREFIX: rust/rime-llm/
+        run: cargo build --release --target "${TARGET}" -p ime-daemon
+
+      - name: Build macOS input method
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          IME_DAEMON_BIN="target/${TARGET}/release/ime-daemon" scripts/build-macos-ime.sh
 
       - name: Build Rust service
         shell: bash

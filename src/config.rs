@@ -45,10 +45,6 @@ fn default_model_file() -> String {
     "Qwen3-0.6B-Q4_K_M.gguf".to_string()
 }
 
-fn default_tokenizer_repo() -> String {
-    "Qwen/Qwen3-0.6B".to_string()
-}
-
 fn default_device() -> DevicePreference {
     DevicePreference::Metal
 }
@@ -105,7 +101,6 @@ pub struct Settings {
     pub model_dir: Option<PathBuf>,
     pub model_repo: String,
     pub model_file: String,
-    pub tokenizer_repo: String,
     pub device: DevicePreference,
     pub context_window: usize,
     pub max_candidates: usize,
@@ -126,7 +121,6 @@ impl Default for Settings {
             model_dir: None,
             model_repo: default_model_repo(),
             model_file: default_model_file(),
-            tokenizer_repo: default_tokenizer_repo(),
             device: default_device(),
             context_window: default_context_window(),
             max_candidates: default_max_candidates(),
@@ -199,9 +193,6 @@ impl Settings {
         if let Some(value) = env::var_os("RIME_LLM_MODEL_FILE") {
             self.model_file = value.to_string_lossy().into_owned();
         }
-        if let Some(value) = env::var_os("RIME_LLM_TOKENIZER_REPO") {
-            self.tokenizer_repo = value.to_string_lossy().into_owned();
-        }
         if let Some(value) = env::var_os("RIME_LLM_DEVICE") {
             self.device = match value.to_string_lossy().to_ascii_lowercase().as_str() {
                 "metal" => DevicePreference::Metal,
@@ -253,7 +244,6 @@ impl Settings {
     fn normalize_and_validate(mut self) -> Result<Self, ConfigError> {
         self.model_repo = self.model_repo.trim().trim_matches('/').to_string();
         self.model_file = self.model_file.trim().to_string();
-        self.tokenizer_repo = self.tokenizer_repo.trim().trim_matches('/').to_string();
         if self.model_repo.is_empty() || self.model_file.is_empty() {
             return Err(ConfigError::Invalid(
                 "model_repo and model_file must not be empty".to_string(),

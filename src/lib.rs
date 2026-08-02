@@ -1,9 +1,10 @@
 pub mod api;
 pub mod config;
-mod dictionary_files;
 pub mod download;
-pub mod inference;
-pub mod lexicon;
+mod inference;
+mod inference_worker;
+mod llama_engine;
+mod llama_prompt;
 pub mod model;
 pub mod predict_queue;
 pub mod prediction;

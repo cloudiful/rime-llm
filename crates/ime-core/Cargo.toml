@@ -1,0 +1,12 @@
+[package]
+name = "ime-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+description = "Pinyin segmentation, candidate lattice, and input state machine for the local input method"
+publish = false
+
+[dependencies]
+model-protocol = { path = "../model-protocol" }
+pinyin-dict = { path = "../pinyin-dict" }

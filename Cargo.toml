@@ -1,28 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["crates/model-protocol", "crates/pinyin-dict", "crates/ime-core", "crates/ime-daemon"]
+
 [package]
 name = "rime-llm"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
 license = "Apache-2.0"
-description = "Local Candle-based model service for Rime candidate generation"
+description = "Local llama.cpp-based model service for Rime candidate generation"
 publish = false
 
 [features]
-metal = ["mistralrs/metal"]
+metal = ["llama-cpp-2/metal"]
 
 [dependencies]
 anyhow = "1"
 axum = "0.8"
-either = "1"
+encoding_rs = "0.8.35"
+llama-cpp-2 = { version = "=0.1.153", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "1.1.3"
 hf-hub = { version = "0.4.3", default-features = false, features = ["tokio", "rustls-tls"] }
+model-protocol = { path = "crates/model-protocol" }
+pinyin-dict = { path = "crates/pinyin-dict" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", rev = "ddc999e7bdd975675663f4b259c99d69c2cb60a7", default-features = false }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
